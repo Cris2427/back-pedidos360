@@ -1,0 +1,11 @@
+# Paquete que genera el script de despliegue
+*.zip
+
+# Salidas de invocaciones de prueba
+out*.json
+
+# Credenciales de AWS: nunca en el repositorio
+.aws/
+credentials
+
+.DS_Store

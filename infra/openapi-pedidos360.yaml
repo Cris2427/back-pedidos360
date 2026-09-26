@@ -1,0 +1,447 @@
+# infra/openapi-pedidos360.yaml
+#
+# Especificación OpenAPI 3.0 de los dominios PEDIDOS y CATÁLOGO de Pedidos360.
+# Cubre el requisito técnico "OpenAPI por servicio (Swagger)" del caso y sirve
+# como documentación de la API para la presentación.
+#
+# ARQUITECTURA: una Lambda por método y ruta (10 en total). Cada operación de
+# abajo declara su propia integración, apuntando a su propia función:
+#
+#   GET    /api/catalog            -> pedidos360-catalog-get
+#   POST   /api/catalog            -> pedidos360-catalog-post
+#   PUT    /api/catalog/{id}       -> pedidos360-catalog-put
+#   PUT    /api/catalog/{id}/stock -> pedidos360-catalog-stock-put
+#   DELETE /api/catalog/{id}       -> pedidos360-catalog-delete
+#   GET    /api/orders             -> pedidos360-orders-get
+#   POST   /api/orders             -> pedidos360-orders-post
+#   PUT    /api/orders/{id}        -> pedidos360-orders-put
+#   PATCH  /api/orders/{id}/status -> pedidos360-orders-status
+#   DELETE /api/orders/{id}        -> pedidos360-orders-delete
+#
+# Incluye las extensiones de AWS (x-amazon-apigateway-*) para poder crear el
+# HTTP API importando este archivo.
+#
+#   OJO: "Volver a importar" REEMPLAZA todas las rutas de la API destino y le
+#   cambia el nombre. Para actualizar la API existente sin sorpresas usa
+#   infra/deploy-aws.ps1, que crea o reapunta ruta por ruta.
+#
+# Antes de importar, reemplaza <ACCOUNT_ID> por el id de tu cuenta AWS
+# (aws sts get-caller-identity --query Account --output text).
+
+openapi: 3.0.1
+
+info:
+  title: pedidos360-api
+  description: >-
+    API de Pedidos y Catálogo del sistema Pedidos360. Protegida con Microsoft
+    Entra ID en dos capas: el JWT authorizer del API Gateway valida firma,
+    issuer, audience y expiración; cada Lambda revalida los claims `scp`
+    (scopes delegados) y `roles` (App Roles) antes de tocar los datos.
+
+
+    Reparto por rol: el **Admin** administra el catálogo y el stock; el
+    **Cliente** y el **Operador** tienen el CRUD de pedidos; solo el
+    **Operador** avanza el ciclo de estados.
+  version: '2.0.0'
+
+servers:
+  - url: https://5hnna48kv8.execute-api.us-east-1.amazonaws.com
+    description: Etapa $default
+
+tags:
+  - name: catalog
+    description: Productos y stock (dominio Catálogo, del Admin)
+  - name: orders
+    description: Pedidos y su ciclo de estados (dominio Pedidos, del Cliente y el Operador)
+
+# CORS a nivel de API: los preflight OPTIONS viajan SIN header Authorization,
+# así que los responde el propio API Gateway antes del authorizer.
+x-amazon-apigateway-cors:
+  allowOrigins:
+    - http://localhost:5173
+  allowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+  allowHeaders: [authorization, content-type]
+  maxAge: 3600
+
+components:
+  securitySchemes:
+    entraJwt:
+      type: oauth2
+      flows: {}
+      x-amazon-apigateway-authorizer:
+        type: jwt
+        identitySource: $request.header.Authorization
+        jwtConfiguration:
+          issuer: https://login.microsoftonline.com/20d60927-bff9-498f-8c5b-94db0ccba634/v2.0
+          # Se aceptan las dos formas del claim `aud`: los tokens v2 de Entra
+          # lo emiten como el client ID pelado y los v1 como el App ID URI.
+          # El authorizer compara literal, así que listamos ambas.
+          audience:
+            - 4af5ea55-a655-4bcb-b24c-9e315b1ee75c
+            - api://4af5ea55-a655-4bcb-b24c-9e315b1ee75c
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    Product:
+      type: object
+      required: [nombre, precio, stock]
+      properties:
+        id: { type: string, example: p-001, readOnly: true }
+        nombre: { type: string, example: Notebook 14" }
+        precio: { type: number, minimum: 0, example: 499990 }
+        stock: { type: integer, minimum: 0, example: 8 }
+
+    OrderItem:
+      type: object
+      required: [productoId, cantidad]
+      properties:
+        productoId: { type: string, example: p-001 }
+        cantidad: { type: integer, minimum: 1, example: 2 }
+        precio:
+          type: number
+          readOnly: true
+          description: Precio unitario congelado al crear el pedido (lo fija el servidor).
+
+    OrderStatus:
+      type: string
+      enum: [CREADO, ACEPTADO, EN_PREPARACION, DESPACHADO, ENTREGADO, CANCELADO]
+
+    Order:
+      type: object
+      required: [items]
+      properties:
+        id: { type: string, readOnly: true, example: o-mg4k2f1a }
+        clienteId:
+          type: string
+          example: cliente@duocuc.cl
+          description: >-
+            Para un Cliente lo fija el servidor con la identidad del token y se
+            ignora lo que venga en el cuerpo; un Operador sí puede registrar el
+            pedido a nombre de un tercero.
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/OrderItem' }
+        total:
+          type: number
+          readOnly: true
+          description: Lo recalcula el servidor; se ignora lo que mande el cliente.
+        estado:
+          allOf: [{ $ref: '#/components/schemas/OrderStatus' }]
+          readOnly: true
+        creadoEn: { type: string, format: date-time, readOnly: true }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        hint: { type: string }
+
+    Eliminado:
+      type: object
+      properties:
+        eliminado: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Token ausente, mal firmado, vencido o con otro issuer/audience (lo rechaza el authorizer).
+    Forbidden:
+      description: Token válido pero sin el scope o el App Role que exige el endpoint.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BadRequest:
+      description: Datos inválidos en el cuerpo de la petición.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: >-
+        El recurso no existe. Un Cliente recibe esto también cuando el pedido
+        es de otra persona: no se revela su existencia.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Choca con una regla de negocio (transición inválida, stock o estado no permitido).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+security:
+  - entraJwt: []
+
+paths:
+  # ======================= CATÁLOGO =======================
+  /api/catalog:
+    get:
+      tags: [catalog]
+      summary: Lista los productos
+      description: 'Scope `catalog.read`. Lo pueden leer los tres roles: el Cliente y el Operador necesitan el catálogo para armar un pedido.'
+      responses:
+        '200':
+          description: Lista de productos
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Product' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-catalog-get/invocations
+
+    post:
+      tags: [catalog]
+      summary: Crea un producto
+      description: 'Scope `catalog.write` y App Role `Admin`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Product' }
+      responses:
+        '201':
+          description: Producto creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-catalog-post/invocations
+
+  /api/catalog/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      tags: [catalog]
+      summary: Edita un producto completo
+      description: 'Scope `catalog.write` y App Role `Admin`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Product' }
+      responses:
+        '200':
+          description: Producto actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-catalog-put/invocations
+
+    delete:
+      tags: [catalog]
+      summary: Elimina un producto
+      description: >-
+        Scope `catalog.write` y App Role `Admin`. Responde 409 si el producto
+        está comprometido en un pedido en curso.
+      responses:
+        '200':
+          description: Producto eliminado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Eliminado' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-catalog-delete/invocations
+
+  /api/catalog/{id}/stock:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      tags: [catalog]
+      summary: Ajusta el stock de un producto
+      description: 'Scope `catalog.write` y App Role `Admin`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stock]
+              properties:
+                stock: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Stock actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-catalog-stock-put/invocations
+
+  # ======================= PEDIDOS =======================
+  /api/orders:
+    get:
+      tags: [orders]
+      summary: Lista los pedidos visibles para quien pregunta
+      description: >-
+        Scope `orders.read` y App Role `Cliente` u `Operador` (el Admin recibe
+        403). El Operador ve todos los pedidos; el Cliente solo los suyos, y el
+        filtro lo aplica la Lambda, no el navegador.
+      responses:
+        '200':
+          description: Lista de pedidos
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Order' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-orders-get/invocations
+
+    post:
+      tags: [orders]
+      summary: Crea un pedido (queda en CREADO)
+      description: >-
+        Scope `orders.write` y App Role `Cliente` u `Operador`. Valida
+        disponibilidad de stock pero NO lo descuenta: según la regla del caso,
+        el stock decrece al ACEPTAR el pedido.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Order' }
+      responses:
+        '201':
+          description: Pedido creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-orders-post/invocations
+
+  /api/orders/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      tags: [orders]
+      summary: Edita un pedido
+      description: >-
+        Scope `orders.write` y App Role `Cliente` (solo los suyos) u
+        `Operador`. Solo mientras el pedido está en CREADO: después ya
+        comprometió stock.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Order' }
+      responses:
+        '200':
+          description: Pedido actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-orders-put/invocations
+
+    delete:
+      tags: [orders]
+      summary: Elimina un pedido
+      description: >-
+        Scope `orders.write` y App Role `Cliente` (solo los suyos) u
+        `Operador`. Solo en CREADO o CANCELADO: un pedido con stock
+        comprometido hay que cancelarlo primero.
+      responses:
+        '200':
+          description: Pedido eliminado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Eliminado' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-orders-delete/invocations
+
+  /api/orders/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      tags: [orders]
+      summary: Avanza el pedido por su ciclo de estados
+      description: >-
+        Scope `orders.write` y App Role `Operador`. Transiciones permitidas:
+        CREADO→ACEPTADO|CANCELADO, ACEPTADO→EN_PREPARACION|CANCELADO,
+        EN_PREPARACION→DESPACHADO, DESPACHADO→ENTREGADO. No se puede despachar
+        sin aceptar. Al pasar a ACEPTADO se descuenta el stock (de forma
+        condicional y atómica); al CANCELAR se devuelve solo si alcanzó a
+        descontarse.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [estado]
+              properties:
+                estado: { $ref: '#/components/schemas/OrderStatus' }
+      responses:
+        '200':
+          description: Pedido actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-orders-status/invocations
