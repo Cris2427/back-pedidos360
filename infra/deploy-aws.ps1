@@ -1,24 +1,24 @@
-﻿# infra/deploy-aws.ps1
+﻿# sube todo el backend a aws: una lambda por metodo y ruta
 #
-# Despliega el backend de Pedidos360 en AWS: UNA LAMBDA POR MÉTODO Y RUTA.
+#   1. crea las dos tablas de dynamodb y llena el catalogo si esta vacio
+#   2. empaqueta el codigo (handlers y lib) en un zip
+#   3. crea o actualiza las 10 funciones, cada una con su handler
+#   4. reusa el authorizer que ya existe, o crea uno
+#   5. crea una integracion por funcion
+#   6. crea las 10 rutas o las reapunta si ya estaban
+#   7. configura el cors del api
+#   8. le da permiso al api gateway para invocar cada funcion
 #
-#   1. Crea las dos tablas de DynamoDB (si no existen) y siembra el catálogo
-#   2. Empaqueta el código una vez (handlers/ + lib/)
-#   3. Crea o actualiza las 10 funciones Lambda, cada una con su handler
-#   4. Reutiliza el JWT authorizer existente, o crea uno con tu tenant
-#   5. Crea una integración por función
-#   6. Crea o reapunta las 10 rutas, todas con el authorizer
-#   7. Configura CORS a nivel de API (el preflight OPTIONS no lleva token)
-#   8. Le da permiso al API Gateway para invocar cada función
+# las rutas se agregan al api que ya existe sin cambiarle la url, asi el .env
+# del front no se toca
+# se puede correr las veces que sea, no duplica nada
 #
-# AGREGA las rutas al HTTP API que ya tienes sin cambiar su URL, así que el
-# .env del frontend no se toca. Es idempotente: se puede correr muchas veces.
+# necesita el aws cli configurado
+# en aws academy las credenciales se vencen, si sale ExpiredToken hay que
+# recargarlas desde AWS Details
 #
-# Requisitos: AWS CLI v2 configurado. En AWS Academy las credenciales caducan:
-# recárgalas desde AWS Details cuando veas "ExpiredToken".
-#
-# Uso:
-#   powershell -File infra\deploy-aws.ps1 -WhatIf   # muestra qué haría
+# uso:
+#   powershell -File infra\deploy-aws.ps1 -WhatIf   # muestra que haria
 #   powershell -File infra\deploy-aws.ps1
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -29,22 +29,22 @@ param(
     [string]$CatalogTable  = 'Pedidos360-Catalog',
     [string]$OrdersTable   = 'Pedidos360-Orders',
     [string]$TenantId      = '20d60927-bff9-498f-8c5b-94db0ccba634',
-    # Las dos formas del claim `aud`: los tokens v2 de Entra lo emiten como el
-    # client ID pelado y los v1 como el App ID URI. El authorizer compara
-    # literal, así que se aceptan ambas.
+    # las dos formas del claim aud: los tokens v2 lo mandan como el client id
+    # pelado y los v1 con el api:// adelante
+    # el authorizer compara literal, asi que aceptamos las dos
     [string[]]$Audiences   = @(
         '4af5ea55-a655-4bcb-b24c-9e315b1ee75c',
         'api://4af5ea55-a655-4bcb-b24c-9e315b1ee75c'
     ),
     [string]$AllowedOrigin = 'http://localhost:5173',
-    # Rol de ejecución. En AWS Academy es 'LabRole'. Necesita
-    # AWSLambdaBasicExecutionRole + acceso a DynamoDB sobre las dos tablas.
+    # el rol con el que corren las lambdas, en aws academy es LabRole
+    # necesita permisos basicos de lambda y acceso a las dos tablas
     [string]$RoleName      = 'LabRole'
 )
 
 $ErrorActionPreference = 'Stop'
 
-# --- Las 10 Lambdas: una por método y ruta ---------------------------------
+# las 10 lambdas, una por metodo y ruta
 $Endpoints = @(
     @{ Nombre = 'catalog-get';       Handler = 'handlers/catalog-get.handler';        Ruta = 'GET /api/catalog' }
     @{ Nombre = 'catalog-post';      Handler = 'handlers/catalog-post.handler';       Ruta = 'POST /api/catalog' }
@@ -62,8 +62,8 @@ function Write-Step($text) { Write-Host "`n=== $text" -ForegroundColor Cyan }
 function Write-Ok($text)   { Write-Host "    $text" -ForegroundColor Green }
 function Write-Skip($text) { Write-Host "    $text" -ForegroundColor DarkGray }
 
-# El AWS CLI no tolera un BOM al inicio de un archivo de parámetros, y
-# Set-Content -Encoding utf8 en PowerShell 5.1 siempre lo agrega.
+# el aws cli no soporta el BOM al inicio de un archivo de parametros, y
+# Set-Content -Encoding utf8 siempre lo agrega, por eso usamos WriteAllText
 function Write-JsonFile {
     param([string]$Name, $Value)
     $path = Join-Path $env:TEMP $Name
@@ -71,8 +71,8 @@ function Write-JsonFile {
     return $path
 }
 
-# Los comandos nativos (aws.exe) NO lanzan excepciones al fallar: hay que
-# mirar $LASTEXITCODE. Por eso este helper y no un try/catch.
+# aws.exe no lanza excepciones cuando falla, hay que mirar $LASTEXITCODE
+# por eso este helper y no un try/catch
 function Test-AwsSuccess {
     param([scriptblock]$Command)
     $previous = $ErrorActionPreference
@@ -83,7 +83,7 @@ function Test-AwsSuccess {
     return $ok
 }
 
-# --- 0. Comprobaciones previas ---------------------------------------------
+# revisamos que este todo antes de empezar
 Write-Step 'Comprobando AWS CLI y credenciales'
 if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
     throw 'No se encontró el comando `aws`. Instala AWS CLI v2 y vuelve a intentar.'
@@ -96,10 +96,9 @@ $RoleArn   = "arn:aws:iam::${AccountId}:role/$RoleName"
 $RepoRoot  = Split-Path -Parent $PSScriptRoot
 $ZipPath   = Join-Path $env:TEMP 'pedidos360-api.zip'
 
-# El codigo puede estar en dos sitios segun como se organice el repositorio:
-#   - en la raiz, si el backend vive en su propio repo (handlers/ junto a infra/)
-#   - bajo backend/pedidos360-api, si todo comparte una sola carpeta
-# Se prueban los dos para que mover las carpetas no rompa el despliegue.
+# el codigo puede estar en la raiz (si el backend tiene su propio repo) o
+# bajo backend/pedidos360-api (si esta todo junto)
+# probamos los dos para que mover las carpetas no rompa el despliegue
 $SourceDir = @($RepoRoot, (Join-Path $RepoRoot 'backend/pedidos360-api')) |
     Where-Object { Test-Path (Join-Path $_ 'handlers') } |
     Select-Object -First 1
@@ -108,7 +107,7 @@ if (-not $SourceDir) {
     throw "No se encontro la carpeta handlers/ ni en $RepoRoot ni en $RepoRootackend\pedidos360-api."
 }
 
-# --- 1. Tablas de DynamoDB --------------------------------------------------
+# tablas
 Write-Step 'Tablas de DynamoDB'
 foreach ($table in @($CatalogTable, $OrdersTable)) {
     if (Test-AwsSuccess { aws dynamodb describe-table --table-name $table --region $Region }) {
@@ -128,7 +127,7 @@ foreach ($table in @($CatalogTable, $OrdersTable)) {
     }
 }
 
-# --- 2. Sembrar el catálogo (solo si está vacío) ----------------------------
+# productos iniciales, solo si la tabla esta vacia
 Write-Step 'Catálogo inicial'
 $cuenta = 0
 if (Test-AwsSuccess { aws dynamodb describe-table --table-name $CatalogTable --region $Region }) {
@@ -153,9 +152,8 @@ if ([int]$cuenta -gt 0) {
     Write-Ok 'sembrados 3 productos'
 }
 
-# --- 3. Empaquetar ----------------------------------------------------------
-# Un solo zip para las 10 funciones: cada una apunta a un handler distinto
-# dentro de él. Comparten el código común de lib/ sin duplicarlo.
+# un solo zip para las 10 funciones, cada una apunta a un handler distinto
+# adentro, asi el codigo de lib/ no se copia diez veces
 Write-Step 'Empaquetando el código'
 foreach ($carpeta in @('handlers', 'lib')) {
     if (-not (Test-Path (Join-Path $SourceDir $carpeta))) {
@@ -163,12 +161,13 @@ foreach ($carpeta in @('handlers', 'lib')) {
     }
 }
 $fuentes = @('handlers', 'lib') | ForEach-Object { Join-Path $SourceDir $_ }
-# -Force sobrescribe un zip anterior. No usamos Remove-Item porque respeta
-# -WhatIf (no borraría) y Compress-Archive no lo respeta (sí escribiría).
+# -Force pisa el zip anterior
+# no usamos Remove-Item porque respeta -WhatIf y Compress-Archive no, asi que
+# en el ensayo quedaba el archivo viejo y fallaba
 Compress-Archive -Path $fuentes -DestinationPath $ZipPath -Force
 Write-Ok "Zip listo: $ZipPath"
 
-# --- 4. Las 10 funciones ----------------------------------------------------
+# las funciones
 Write-Step 'Funciones Lambda (una por método y ruta)'
 $envVars = "Variables={ALLOWED_ORIGIN=$AllowedOrigin,CATALOG_TABLE=$CatalogTable,ORDERS_TABLE=$OrdersTable}"
 
@@ -205,7 +204,7 @@ foreach ($ep in $Endpoints) {
     }
 }
 
-# --- 5. JWT authorizer ------------------------------------------------------
+# authorizer
 Write-Step 'JWT authorizer (Entra ID)'
 $authorizers = (aws apigatewayv2 get-authorizers --api-id $ApiId --region $Region | ConvertFrom-Json).Items
 $authorizer = $authorizers | Where-Object {
@@ -230,7 +229,7 @@ if ($authorizer) {
     Write-Ok "Authorizer creado ($AuthorizerId)"
 }
 
-# --- 6. Integraciones y rutas ----------------------------------------------
+# integraciones y rutas
 Write-Step 'Integraciones y rutas'
 $integraciones = (aws apigatewayv2 get-integrations --api-id $ApiId --region $Region | ConvertFrom-Json).Items
 $rutas = (aws apigatewayv2 get-routes --api-id $ApiId --region $Region | ConvertFrom-Json).Items
@@ -239,7 +238,7 @@ foreach ($ep in $Endpoints) {
     $fn = "$Prefijo-$($ep.Nombre)"
     $fnArn = "arn:aws:lambda:${Region}:${AccountId}:function:$fn"
 
-    # Una integración por función
+    # una integracion por funcion
     $integracion = $integraciones | Where-Object { $_.IntegrationUri -eq $fnArn } | Select-Object -First 1
     if ($integracion) {
         $integracionId = $integracion.IntegrationId
@@ -250,8 +249,7 @@ foreach ($ep in $Endpoints) {
         $integracionId = $creada.IntegrationId
     }
 
-    # La ruta: se crea, o se reapunta si ya existía (p. ej. apuntando a la
-    # Lambda monolítica anterior).
+    # la ruta se crea, o se reapunta si ya existia
     $ruta = $rutas | Where-Object { $_.RouteKey -eq $ep.Ruta } | Select-Object -First 1
     if ($ruta) {
         if ($ruta.Target -eq "integrations/$integracionId") {
@@ -274,9 +272,9 @@ foreach ($ep in $Endpoints) {
     }
 }
 
-# --- 7. CORS ----------------------------------------------------------------
-# Se configura en el API, no en el código: el preflight OPTIONS viaja sin
-# header Authorization, así que el authorizer lo rechazaría con 401.
+# el cors va en el api y no en el codigo
+# el preflight OPTIONS viaja sin token, asi que si lo protege el authorizer
+# muere en 401 y el navegador bloquea todo
 Write-Step 'CORS del API'
 if ($PSCmdlet.ShouldProcess($ApiId, 'configurar CORS')) {
     $corsFile = Write-JsonFile 'pedidos360-cors.json' @{
@@ -290,7 +288,7 @@ if ($PSCmdlet.ShouldProcess($ApiId, 'configurar CORS')) {
     else { throw 'Falló la actualización de CORS (revisa el error de arriba).' }
 }
 
-# --- 8. Permisos de invocación ----------------------------------------------
+# permisos para que el api gateway pueda invocar las lambdas
 Write-Step 'Permisos para que API Gateway invoque las Lambdas'
 $agregados = 0
 foreach ($ep in $Endpoints) {
@@ -314,6 +312,6 @@ Write-Host "    Lambdas:  $($Endpoints.Count) (una por método y ruta)" -Foregro
 Write-Host "    Tablas:   $CatalogTable · $OrdersTable" -ForegroundColor Green
 Write-Host "    Prueba:   corepack pnpm dev  ->  entra a /catalog y /orders`n"
 
-# Sin esto el script hereda el código de salida del último `aws` (254 cuando un
-# permiso ya existía) y parece que falló aunque todo haya terminado bien.
+# sin esto el script se queda con el codigo de salida del ultimo aws (254 si
+# el permiso ya estaba) y parece que fallo aunque haya salido todo bien
 exit 0

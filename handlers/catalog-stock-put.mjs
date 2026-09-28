@@ -1,4 +1,3 @@
-// Va en su propia Lambda porque es su propia ruta y su propio método.
 import { crearStore } from '../lib/store.mjs';
 import { json, leerBody, idDeRuta, conManejoDeErrores } from '../lib/http.mjs';
 import { exigirScope, exigirRol } from '../lib/auth.mjs';

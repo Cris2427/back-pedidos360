@@ -1,9 +1,3 @@
-// PATCH /api/orders/{id}/status — avanza el pedido por su ciclo de estados.
-// Es del Operador, el Cliente crea y sigue sus pedidos, pero no decide si se
-// aceptan o despachan
-// Aca viven dos reglas:
-//   1. No se puede despachar sin aceptar (lo impone TRANSICIONES).
-//   2. El stock decrece al ACEPTAR el pedido, no al crearlo.
 import { crearStore } from '../lib/store.mjs';
 import { json, leerBody, idDeRuta, conManejoDeErrores } from '../lib/http.mjs';
 import { exigirScope, exigirRol, getUserId } from '../lib/auth.mjs';
@@ -36,16 +30,14 @@ export const handler = conManejoDeErrores(async (event) => {
   let stockDescontado = pedido.stockDescontado === true;
 
   if (nuevo === 'ACEPTADO') {
-    // El descuento es condicional en la base de datos (stock >= cantidad) y
-    // atómico, así que dos pedidos simultáneos no pueden dejarlo negativo.
+    // el stock baja al aceptar, no al crear el pedido
     const descontados = [];
     for (const item of pedido.items) {
       if (await store.descontarStock(item.productoId, item.cantidad)) {
         descontados.push(item);
         continue;
       }
-      // No alcanzó: devolvemos lo ya descontado para no dejar el catálogo a
-      // medias, y rechazamos la aceptación.
+      // no alcanzo: devolvemos lo ya descontado y rechazamos
       for (const hecho of descontados) {
         await store.devolverStock(hecho.productoId, hecho.cantidad);
       }
@@ -59,7 +51,7 @@ export const handler = conManejoDeErrores(async (event) => {
     stockDescontado = true;
   }
 
-  // Cancelar devuelve el stock solo si alcanzó a descontarse.
+  // solo se devuelve si alcanzo a descontarse
   if (nuevo === 'CANCELADO' && stockDescontado) {
     for (const item of pedido.items) {
       await store.devolverStock(item.productoId, item.cantidad);
@@ -67,8 +59,7 @@ export const handler = conManejoDeErrores(async (event) => {
     stockDescontado = false;
   }
 
-  // Bloqueo optimista: solo se aplica si el pedido sigue en el estado que
-  // leímos. Si otro operador se adelantó, no se aplica dos veces.
+  // solo cambia si el pedido sigue como lo leimos
   const actualizado = await store.cambiarEstado(id, pedido.estado, nuevo, {
     actualizadoPor: getUserId(event),
     stockDescontado,

@@ -17,7 +17,7 @@ export const handler = conManejoDeErrores(async (event) => {
 
   const esOperador = tieneRol(event, 'Operador');
   if (!esOperador && pedido.clienteId !== getUserId(event)) {
-    // Mismo cuerpo que un pedido inexistente: no revelamos que existe.
+    // 404 y no 403: no le confirmamos que el pedido existe
     return json(404, { error: `Pedido '${id}' no encontrado.` });
   }
 

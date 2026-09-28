@@ -1,16 +1,14 @@
-// backend/pedidos360-api/test-local.mjs
-//
-// Pruebas básicas de las 10 Lambdas, sin desplegar nada:
-//   node backend/pedidos360-api/test-local.mjs
-//
-// Simula eventos de API Gateway HTTP API (payload v2) y usa el store en
-// memoria, así que no necesita credenciales de AWS ni red.
+// pruebas de las 10 lambdas sin desplegar nada:
+//   node test-local.mjs
+// arma eventos como los que manda el api gateway y usa el store en memoria,
+// asi que no necesita credenciales de aws ni internet
 
-// Debe ir ANTES de importar los handlers: cada uno crea su store al cargarse.
+// esto va antes de importar los handlers porque cada uno arma su store al
+// cargarse
 process.env.STORE = 'memory';
 
-// Import dinámico por lo mismo: un `import` estático se evalúa antes que la
-// línea de arriba y los handlers elegirían DynamoDB.
+// por lo mismo el import es dinamico: uno normal se evalua antes que la
+// linea de arriba y los handlers terminarian usando dynamodb
 const h = {
   catalogGet: (await import('./handlers/catalog-get.mjs')).handler,
   catalogPost: (await import('./handlers/catalog-post.mjs')).handler,
@@ -24,8 +22,8 @@ const h = {
   ordersDelete: (await import('./handlers/orders-delete.mjs')).handler,
 };
 
-// Todos los handlers comparten la misma instancia del store en memoria
-// (crearStore la memoiza por proceso), igual que en AWS comparten DynamoDB.
+// los handlers comparten la misma instancia del store, igual que en aws
+// comparten dynamodb
 const { crearStore } = await import('./lib/store.mjs');
 const compartido = crearStore();
 
@@ -36,7 +34,8 @@ const OPERADOR = { roles: '[Operador]', user: 'operador@duoc.cl' };
 const CLIENTE = { roles: '[Cliente]', user: 'cliente@duoc.cl' };
 const OTRO_CLIENTE = { roles: '[Cliente]', user: 'otro@duoc.cl' };
 
-/** Evento de API Gateway v2. Los claims van como string, igual que en AWS. */
+// evento como los que manda el api gateway, con los claims en texto igual
+// que en aws
 const ev = (method, rawPath, opts = {}) => {
   const { body, id, scp = SCOPES, roles = '[Admin]', user = 'x@duoc.cl' } = opts;
   return {
@@ -186,9 +185,9 @@ await call('roles "[Operador Cliente]" en catálogo (sin Admin)', h.catalogPost,
   ev('POST', '/api/catalog', { roles: '[Operador Cliente]', user: 'a@b.cl', body: { nombre: 'Z', precio: 1, stock: 1 } }), 403);
 await call('sin roles', h.ordersGet, ev('GET', '/api/orders', { roles: '', user: 'a@b.cl' }), 403);
 
-// El contador vive en DynamoDB y arranca alineado con los ids sembrados.
-// Sin expresiones regulares con barra invertida: en un template literal
-// `\d` se colapsa a `d` y el patron deja de coincidir en silencio.
+// el contador arranca desde el mayor id que ya existe
+// nada de regex armadas con template literal: ahi \d se convierte en d y
+// deja de calzar sin avisar
 console.log('\n== Numeracion correlativa de ids ==');
 const pa = await call('POST /api/catalog', h.catalogPost,
   ev('POST', '/api/catalog', { ...ADMIN, body: { nombre: 'Uno', precio: 100, stock: 1 } }), 201);

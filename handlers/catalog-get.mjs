@@ -1,3 +1,4 @@
+// lo leen los tres roles, administrarlo ya es otra cosa
 import { crearStore } from '../lib/store.mjs';
 import { json, conManejoDeErrores } from '../lib/http.mjs';
 import { exigirScope } from '../lib/auth.mjs';

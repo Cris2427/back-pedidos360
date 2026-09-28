@@ -10,6 +10,7 @@ export const handler = conManejoDeErrores(async (event) => {
   const sinRol = exigirRol(event, 'Cliente', 'Operador');
   if (sinRol) return sinRol;
 
+  // el filtro se hace aca, no en el navegador
   const pedidos = await store.listarPedidos();
   if (tieneRol(event, 'Operador')) return json(200, pedidos);
 

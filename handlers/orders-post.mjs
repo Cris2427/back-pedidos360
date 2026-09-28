@@ -15,8 +15,7 @@ export const handler = conManejoDeErrores(async (event) => {
   if (!body) return json(400, { error: 'El cuerpo no es JSON válido.' });
 
   const userId = getUserId(event);
-  // Un Cliente solo puede pedir a su propio nombre: se ignora el clienteId
-  // que venga en el cuerpo. Un Operador sí puede registrar para un tercero.
+  // al cliente se le ignora el clienteId del cuerpo y se usa el del token
   const clienteId = tieneRol(event, 'Operador')
     ? String(body.clienteId ?? '').trim()
     : userId;

@@ -1,4 +1,3 @@
-// DELETE /api/catalog/{id} — Solo Admin elimina un producto del catálogo.
 import { crearStore } from '../lib/store.mjs';
 import { json, idDeRuta, conManejoDeErrores } from '../lib/http.mjs';
 import { exigirScope, exigirRol } from '../lib/auth.mjs';
@@ -15,8 +14,7 @@ export const handler = conManejoDeErrores(async (event) => {
   const producto = await store.obtenerProducto(id);
   if (!producto) return json(404, { error: `Producto '${id}' no encontrado.` });
 
-  // No se puede borrar un producto comprometido en un pedido vivo: quedaría
-  // un pedido apuntando a algo que ya no existe.
+  // si esta en un pedido en curso no se borra: quedaria apuntando a nada
   const pedidos = await store.listarPedidos();
   const enUso = pedidos.filter(
     (p) =>

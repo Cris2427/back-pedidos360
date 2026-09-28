@@ -1,33 +1,3 @@
-# infra/openapi-pedidos360.yaml
-#
-# Especificación OpenAPI 3.0 de los dominios PEDIDOS y CATÁLOGO de Pedidos360.
-# Cubre el requisito técnico "OpenAPI por servicio (Swagger)" del caso y sirve
-# como documentación de la API para la presentación.
-#
-# ARQUITECTURA: una Lambda por método y ruta (10 en total). Cada operación de
-# abajo declara su propia integración, apuntando a su propia función:
-#
-#   GET    /api/catalog            -> pedidos360-catalog-get
-#   POST   /api/catalog            -> pedidos360-catalog-post
-#   PUT    /api/catalog/{id}       -> pedidos360-catalog-put
-#   PUT    /api/catalog/{id}/stock -> pedidos360-catalog-stock-put
-#   DELETE /api/catalog/{id}       -> pedidos360-catalog-delete
-#   GET    /api/orders             -> pedidos360-orders-get
-#   POST   /api/orders             -> pedidos360-orders-post
-#   PUT    /api/orders/{id}        -> pedidos360-orders-put
-#   PATCH  /api/orders/{id}/status -> pedidos360-orders-status
-#   DELETE /api/orders/{id}        -> pedidos360-orders-delete
-#
-# Incluye las extensiones de AWS (x-amazon-apigateway-*) para poder crear el
-# HTTP API importando este archivo.
-#
-#   OJO: "Volver a importar" REEMPLAZA todas las rutas de la API destino y le
-#   cambia el nombre. Para actualizar la API existente sin sorpresas usa
-#   infra/deploy-aws.ps1, que crea o reapunta ruta por ruta.
-#
-# Antes de importar, reemplaza <ACCOUNT_ID> por el id de tu cuenta AWS
-# (aws sts get-caller-identity --query Account --output text).
-
 openapi: 3.0.1
 
 info:
@@ -54,8 +24,8 @@ tags:
   - name: orders
     description: Pedidos y su ciclo de estados (dominio Pedidos, del Cliente y el Operador)
 
-# CORS a nivel de API: los preflight OPTIONS viajan SIN header Authorization,
-# así que los responde el propio API Gateway antes del authorizer.
+# el cors va en el api porque el preflight OPTIONS viaja sin token, asi lo
+# responde el api gateway antes de llegar al authorizer
 x-amazon-apigateway-cors:
   allowOrigins:
     - http://localhost:5173
@@ -73,9 +43,7 @@ components:
         identitySource: $request.header.Authorization
         jwtConfiguration:
           issuer: https://login.microsoftonline.com/20d60927-bff9-498f-8c5b-94db0ccba634/v2.0
-          # Se aceptan las dos formas del claim `aud`: los tokens v2 de Entra
-          # lo emiten como el client ID pelado y los v1 como el App ID URI.
-          # El authorizer compara literal, así que listamos ambas.
+          # las dos formas del claim aud, porque el authorizer compara literal
           audience:
             - 4af5ea55-a655-4bcb-b24c-9e315b1ee75c
             - api://4af5ea55-a655-4bcb-b24c-9e315b1ee75c
@@ -179,7 +147,7 @@ security:
   - entraJwt: []
 
 paths:
-  # ======================= CATÁLOGO =======================
+  # ---- catalogo ----
   /api/catalog:
     get:
       tags: [catalog]
@@ -304,7 +272,7 @@ paths:
         payloadFormatVersion: '2.0'
         uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-catalog-stock-put/invocations
 
-  # ======================= PEDIDOS =======================
+  # ---- pedidos ----
   /api/orders:
     get:
       tags: [orders]
