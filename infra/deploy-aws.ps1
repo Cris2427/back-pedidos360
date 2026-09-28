@@ -1,26 +1,4 @@
-﻿# sube todo el backend a aws: una lambda por metodo y ruta
-#
-#   1. crea las dos tablas de dynamodb y llena el catalogo si esta vacio
-#   2. empaqueta el codigo (handlers y lib) en un zip
-#   3. crea o actualiza las 10 funciones, cada una con su handler
-#   4. reusa el authorizer que ya existe, o crea uno
-#   5. crea una integracion por funcion
-#   6. crea las 10 rutas o las reapunta si ya estaban
-#   7. configura el cors del api
-#   8. le da permiso al api gateway para invocar cada funcion
-#
-# las rutas se agregan al api que ya existe sin cambiarle la url, asi el .env
-# del front no se toca
-# se puede correr las veces que sea, no duplica nada
-#
-# necesita el aws cli configurado
-# en aws academy las credenciales se vencen, si sale ExpiredToken hay que
-# recargarlas desde AWS Details
-#
-# uso:
-#   powershell -File infra\deploy-aws.ps1 -WhatIf   # muestra que haria
-#   powershell -File infra\deploy-aws.ps1
-
+﻿
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$Region        = 'us-east-1',
