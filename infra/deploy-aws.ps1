@@ -23,17 +23,19 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # las 10 lambdas, una por metodo y ruta
+# el scope es el mismo que revisa cada lambda: el gateway lo exige antes
+# de invocarla, asi un token sin ese permiso ni siquiera la despierta
 $Endpoints = @(
-    @{ Nombre = 'catalog-get';       Handler = 'handlers/catalog-get.handler';        Ruta = 'GET /api/catalog' }
-    @{ Nombre = 'catalog-post';      Handler = 'handlers/catalog-post.handler';       Ruta = 'POST /api/catalog' }
-    @{ Nombre = 'catalog-put';       Handler = 'handlers/catalog-put.handler';        Ruta = 'PUT /api/catalog/{id}' }
-    @{ Nombre = 'catalog-stock-put'; Handler = 'handlers/catalog-stock-put.handler';  Ruta = 'PUT /api/catalog/{id}/stock' }
-    @{ Nombre = 'catalog-delete';    Handler = 'handlers/catalog-delete.handler';     Ruta = 'DELETE /api/catalog/{id}' }
-    @{ Nombre = 'orders-get';        Handler = 'handlers/orders-get.handler';         Ruta = 'GET /api/orders' }
-    @{ Nombre = 'orders-post';       Handler = 'handlers/orders-post.handler';        Ruta = 'POST /api/orders' }
-    @{ Nombre = 'orders-put';        Handler = 'handlers/orders-put.handler';         Ruta = 'PUT /api/orders/{id}' }
-    @{ Nombre = 'orders-status';     Handler = 'handlers/orders-status-patch.handler'; Ruta = 'PATCH /api/orders/{id}/status' }
-    @{ Nombre = 'orders-delete';     Handler = 'handlers/orders-delete.handler';      Ruta = 'DELETE /api/orders/{id}' }
+    @{ Nombre = 'catalog-get';       Handler = 'handlers/catalog-get.handler';        Ruta = 'GET /api/catalog'; Scope = 'catalog.read' }
+    @{ Nombre = 'catalog-post';      Handler = 'handlers/catalog-post.handler';       Ruta = 'POST /api/catalog'; Scope = 'catalog.write' }
+    @{ Nombre = 'catalog-put';       Handler = 'handlers/catalog-put.handler';        Ruta = 'PUT /api/catalog/{id}'; Scope = 'catalog.write' }
+    @{ Nombre = 'catalog-stock-put'; Handler = 'handlers/catalog-stock-put.handler';  Ruta = 'PUT /api/catalog/{id}/stock'; Scope = 'catalog.write' }
+    @{ Nombre = 'catalog-delete';    Handler = 'handlers/catalog-delete.handler';     Ruta = 'DELETE /api/catalog/{id}'; Scope = 'catalog.write' }
+    @{ Nombre = 'orders-get';        Handler = 'handlers/orders-get.handler';         Ruta = 'GET /api/orders'; Scope = 'orders.read' }
+    @{ Nombre = 'orders-post';       Handler = 'handlers/orders-post.handler';        Ruta = 'POST /api/orders'; Scope = 'orders.write' }
+    @{ Nombre = 'orders-put';        Handler = 'handlers/orders-put.handler';         Ruta = 'PUT /api/orders/{id}'; Scope = 'orders.write' }
+    @{ Nombre = 'orders-status';     Handler = 'handlers/orders-status-patch.handler'; Ruta = 'PATCH /api/orders/{id}/status'; Scope = 'orders.write' }
+    @{ Nombre = 'orders-delete';     Handler = 'handlers/orders-delete.handler';      Ruta = 'DELETE /api/orders/{id}'; Scope = 'orders.write' }
 )
 
 function Write-Step($text) { Write-Host "`n=== $text" -ForegroundColor Cyan }
@@ -193,7 +195,22 @@ $authorizer = $authorizers | Where-Object {
 
 if ($authorizer) {
     $AuthorizerId = $authorizer.AuthorizerId
-    Write-Skip "Reutilizando '$($authorizer.Name)' ($AuthorizerId)"
+    $actuales = @($authorizer.JwtConfiguration.Audience)
+    $faltan = @($Audiences | Where-Object { $actuales -notcontains $_ })
+    if ($faltan.Count -eq 0) {
+        Write-Skip "Reutilizando '$($authorizer.Name)' ($AuthorizerId), ya acepta las dos audiencias"
+    } elseif ($PSCmdlet.ShouldProcess($authorizer.Name, 'agregar audiencias')) {
+        # se suman a las que ya tiene, no se reemplazan
+        $jwtFile = Write-JsonFile 'pedidos360-jwt.json' @{
+            Issuer   = $authorizer.JwtConfiguration.Issuer
+            Audience = @($actuales + $faltan)
+        }
+        aws apigatewayv2 update-authorizer `
+            --api-id $ApiId --authorizer-id $AuthorizerId `
+            --jwt-configuration "file://$jwtFile" --region $Region | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Falló la actualización del authorizer $($authorizer.Name)." }
+        Write-Ok "Audiencias agregadas a '$($authorizer.Name)': $($faltan -join ', ')"
+    }
 } elseif ($PSCmdlet.ShouldProcess('entra-jwt', 'crear authorizer')) {
     $jwtFile = Write-JsonFile 'pedidos360-jwt.json' @{
         Issuer   = "https://login.microsoftonline.com/$TenantId/v2.0"
@@ -227,26 +244,32 @@ foreach ($ep in $Endpoints) {
         $integracionId = $creada.IntegrationId
     }
 
-    # la ruta se crea, o se reapunta si ya existia
+    # la ruta se crea, o se corrige si apunta a otra lambda o le falta el scope
     $ruta = $rutas | Where-Object { $_.RouteKey -eq $ep.Ruta } | Select-Object -First 1
     if ($ruta) {
-        if ($ruta.Target -eq "integrations/$integracionId") {
-            Write-Skip "ya apunta bien: $($ep.Ruta)"
-        } elseif ($PSCmdlet.ShouldProcess($ep.Ruta, 'reapuntar a su propia Lambda')) {
+        $apuntaBien = $ruta.Target -eq "integrations/$integracionId"
+        $scopeBien = (@($ruta.AuthorizationScopes) -join ' ') -eq $ep.Scope
+        if ($apuntaBien -and $scopeBien) {
+            Write-Skip "ya está bien: $($ep.Ruta)  [$($ep.Scope)]"
+        } elseif ($PSCmdlet.ShouldProcess($ep.Ruta, 'corregir destino y scope')) {
             aws apigatewayv2 update-route `
                 --api-id $ApiId --route-id $ruta.RouteId `
                 --target "integrations/$integracionId" `
                 --authorization-type JWT --authorizer-id $AuthorizerId `
+                --authorization-scopes $ep.Scope `
                 --region $Region | Out-Null
-            Write-Ok "reapuntada:  $($ep.Ruta)  ->  $fn"
+            if ($LASTEXITCODE -ne 0) { throw "Falló la actualización de la ruta $($ep.Ruta)." }
+            Write-Ok "actualizada: $($ep.Ruta)  ->  $fn  [$($ep.Scope)]"
         }
     } elseif ($PSCmdlet.ShouldProcess($ep.Ruta, 'crear ruta')) {
         aws apigatewayv2 create-route `
             --api-id $ApiId --route-key $ep.Ruta `
             --target "integrations/$integracionId" `
             --authorization-type JWT --authorizer-id $AuthorizerId `
+            --authorization-scopes $ep.Scope `
             --region $Region | Out-Null
-        Write-Ok "creada:      $($ep.Ruta)  ->  $fn"
+        if ($LASTEXITCODE -ne 0) { throw "Falló la creación de la ruta $($ep.Ruta)." }
+        Write-Ok "creada:      $($ep.Ruta)  ->  $fn  [$($ep.Scope)]"
     }
 }
 

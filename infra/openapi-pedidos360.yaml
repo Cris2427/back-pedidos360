@@ -143,6 +143,8 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
+# por defecto todo exige token; cada operacion agrega su scope y el
+# gateway lo revisa antes de invocar la lambda (ambitos de autorizacion)
 security:
   - entraJwt: []
 
@@ -153,6 +155,8 @@ paths:
       tags: [catalog]
       summary: Lista los productos
       description: 'Scope `catalog.read`. Lo pueden leer los tres roles: el Cliente y el Operador necesitan el catálogo para armar un pedido.'
+      security:
+        - entraJwt: [catalog.read]
       responses:
         '200':
           description: Lista de productos
@@ -178,6 +182,8 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/Product' }
+      security:
+        - entraJwt: [catalog.write]
       responses:
         '201':
           description: Producto creado
@@ -205,6 +211,8 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/Product' }
+      security:
+        - entraJwt: [catalog.write]
       responses:
         '200':
           description: Producto actualizado
@@ -226,6 +234,8 @@ paths:
       description: >-
         Scope `catalog.write` y App Role `Admin`. Responde 409 si el producto
         está comprometido en un pedido en curso.
+      security:
+        - entraJwt: [catalog.write]
       responses:
         '200':
           description: Producto eliminado
@@ -257,6 +267,8 @@ paths:
               required: [stock]
               properties:
                 stock: { type: integer, minimum: 0 }
+      security:
+        - entraJwt: [catalog.write]
       responses:
         '200':
           description: Stock actualizado
@@ -281,6 +293,8 @@ paths:
         Scope `orders.read` y App Role `Cliente` u `Operador` (el Admin recibe
         403). El Operador ve todos los pedidos; el Cliente solo los suyos, y el
         filtro lo aplica la Lambda, no el navegador.
+      security:
+        - entraJwt: [orders.read]
       responses:
         '200':
           description: Lista de pedidos
@@ -309,6 +323,8 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/Order' }
+      security:
+        - entraJwt: [orders.write]
       responses:
         '201':
           description: Pedido creado
@@ -339,6 +355,8 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/Order' }
+      security:
+        - entraJwt: [orders.write]
       responses:
         '200':
           description: Pedido actualizado
@@ -362,6 +380,8 @@ paths:
         Scope `orders.write` y App Role `Cliente` (solo los suyos) u
         `Operador`. Solo en CREADO o CANCELADO: un pedido con stock
         comprometido hay que cancelarlo primero.
+      security:
+        - entraJwt: [orders.write]
       responses:
         '200':
           description: Pedido eliminado
@@ -399,6 +419,8 @@ paths:
               required: [estado]
               properties:
                 estado: { $ref: '#/components/schemas/OrderStatus' }
+      security:
+        - entraJwt: [orders.write]
       responses:
         '200':
           description: Pedido actualizado

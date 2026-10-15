@@ -45,12 +45,16 @@ AWS, pero el código común vive en un solo lugar.
 
 | Capa | Qué valida | Dónde |
 |---|---|---|
-| JWT Authorizer del API Gateway | firma, `iss`, `aud`, `exp` | configuración del HTTP API |
+| JWT Authorizer del API Gateway | firma, `iss`, `aud`, `exp` y el **scope de la ruta** (ámbitos de autorización) | configuración del HTTP API |
 | Cada Lambda | claims `scp` (scopes) y `roles` (App Roles) | [`lib/auth.mjs`](lib/auth.mjs) |
 
 Si el token no sirve, el authorizer responde **401** y la Lambda ni se ejecuta.
-Si el token es válido pero le falta el permiso, la Lambda responde **403**
-diciendo exactamente qué scope o rol falta.
+Si el token es válido pero no trae el scope de esa ruta, el authorizer responde
+**403** y la Lambda tampoco se ejecuta. Si trae el scope pero no el App Role,
+la Lambda responde **403** diciendo exactamente qué rol falta.
+
+La Lambda vuelve a revisar el scope aunque el gateway ya lo hizo: si alguien
+borra un ámbito desde la consola, el endpoint sigue protegido.
 
 > **Ojo con el claim `roles`**: el API Gateway entrega todos los claims como
 > string, así que un claim de tipo array llega envuelto en corchetes
@@ -95,7 +99,7 @@ estados.
 node test-local.mjs
 ```
 
-52 comprobaciones sobre las 10 funciones: permisos por scope y por rol,
+62 comprobaciones sobre las 10 funciones: permisos por scope y por rol,
 validaciones, ciclo de estados, reglas de stock, aislamiento entre clientes,
 numeración correlativa de ids y las formas en que puede llegar el claim
 `roles`. Usa el store en memoria, así que **no necesita credenciales de AWS ni
