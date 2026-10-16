@@ -1,7 +1,8 @@
 import { crearStore } from '../lib/store.mjs';
 import { json, leerBody, idDeRuta, conManejoDeErrores } from '../lib/http.mjs';
 import { exigirScope, exigirRol, getUserId } from '../lib/auth.mjs';
-import { TRANSICIONES } from '../lib/reglas.mjs';
+import { TRANSICIONES, EVENTO_POR_ESTADO } from '../lib/reglas.mjs';
+import { publicarEvento } from '../lib/mensajeria.mjs';
 
 const store = crearStore();
 
@@ -76,5 +77,7 @@ export const handler = conManejoDeErrores(async (event) => {
     });
   }
 
+  // solo se avisa lo que quedo guardado
+  await publicarEvento(EVENTO_POR_ESTADO[nuevo], actualizado);
   return json(200, actualizado);
 });

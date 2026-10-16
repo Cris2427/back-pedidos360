@@ -45,7 +45,7 @@ infra/
   mensajeria.json             nombres de topic, colas, DLQ y filtros
   deploy-aws.ps1              despliega todo en AWS
   openapi-pedidos360.yaml     especificación de la API
-test-local.mjs       83 pruebas de la API y los consumidores, sin AWS
+test-local.mjs       99 pruebas de la API, el productor y los consumidores, sin AWS
 ```
 
 Las 10 funciones comparten un mismo zip y se diferencian por su `handler`
@@ -111,6 +111,14 @@ estados.
 evento ─→ SNS pedidos360-eventos ──┼─ q-warehouse  → preparar-pedido   (+ q-warehouse-dlq)
                                    └─ q-invoice    → generar-boleta    (+ q-invoice-dlq)
 ```
+
+Los eventos los publica la API de pedidos, **después de guardar** en DynamoDB:
+`orders-post` publica `PedidoCreado` y `orders-status-patch` publica el evento
+de cada cambio de estado. Un cambio rechazado (403, 409) no publica nada.
+
+Si SNS falla, el pedido **se guarda igual** y el error queda en el log: el
+núcleo del negocio no puede depender de las notificaciones, que es justamente
+lo que se busca al desacoplar.
 
 Cada evento se publica **una vez** en el topic, con el atributo `tipo_evento`.
 El topic entrega una copia a cada cola cuyo filtro calce (*fan-out*):
@@ -191,14 +199,16 @@ Tipos: `PedidoCreado`, `PedidoAceptado`, `PedidoEnPreparacion`,
 node test-local.mjs
 ```
 
-83 comprobaciones. Sobre las 10 funciones de la API: permisos por scope y por
+99 comprobaciones. Sobre las 10 funciones de la API: permisos por scope y por
 rol, validaciones, ciclo de estados, reglas de stock, aislamiento entre
 clientes, numeración correlativa de ids y las formas en que puede llegar el
-claim `roles`. Sobre los consumidores: las tres decisiones (ACK, reintento,
-DLQ) y que cada una quede en el log, mensajes duplicados, lotes donde falla
-solo un mensaje y la DLQ caída.
+claim `roles`. Sobre el productor: que cada cambio de estado publique su
+evento, que un cambio rechazado no publique nada y que el pedido se guarde
+aunque SNS no responda. Sobre los consumidores: las tres decisiones (ACK,
+reintento, DLQ) y que cada una quede en el log, mensajes duplicados, lotes
+donde falla solo un mensaje y la DLQ caída.
 
-Usa el store y la DLQ en memoria, así que **no necesita credenciales de AWS ni
+Usa el store, el topic y la DLQ en memoria, así que **no necesita credenciales de AWS ni
 red**.
 
 ## Desplegar
@@ -223,6 +233,13 @@ audiencia, rol de ejecución (`LabRole` en AWS Academy) y runtime
 
 > En AWS Academy las credenciales caducan cada pocas horas. Si ves
 > `ExpiredToken`, recárgalas desde **AWS Details → AWS CLI** del Learner Lab.
+
+> **Corre el script al empezar cada sesión del Learner Lab.** Cuando termina
+> una sesión, el `LabRole` pierde los permisos de SQS y Lambda apaga los
+> triggers de los consumidores (en CloudTrail aparece como
+> `LambdaESMDisabled`). Al volver no se encienden solos. Los mensajes no se
+> pierden, esperan en la cola, pero nadie los procesa hasta que el script
+> vuelve a encender los triggers.
 
 ## Variables de entorno de las Lambdas
 

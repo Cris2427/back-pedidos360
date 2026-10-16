@@ -1,7 +1,8 @@
 import { crearStore } from '../lib/store.mjs';
 import { json, leerBody, conManejoDeErrores } from '../lib/http.mjs';
 import { exigirScope, exigirRol, tieneRol, getUserId } from '../lib/auth.mjs';
-import { resolverItems } from '../lib/reglas.mjs';
+import { resolverItems, EVENTO_POR_ESTADO } from '../lib/reglas.mjs';
+import { publicarEvento } from '../lib/mensajeria.mjs';
 
 const store = crearStore();
 
@@ -35,5 +36,7 @@ export const handler = conManejoDeErrores(async (event) => {
     creadoPor: userId,
   };
   await store.guardarPedido(pedido);
+  // primero se guarda y despues se avisa: el evento cuenta algo que ya paso
+  await publicarEvento(EVENTO_POR_ESTADO.CREADO, pedido);
   return json(201, pedido);
 });

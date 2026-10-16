@@ -161,7 +161,19 @@ Write-Ok "Zip listo: $ZipPath"
 
 # las funciones
 Write-Step 'Funciones Lambda (una por método y ruta)'
-$envVars = "Variables={ALLOWED_ORIGIN=$AllowedOrigin,CATALOG_TABLE=$CatalogTable,ORDERS_TABLE=$OrdersTable}"
+# pedidos publica los eventos, asi que las de la api tambien reciben el topic
+$TopicArn = "arn:aws:sns:${Region}:${AccountId}:$($Mensajeria.topic)"
+$envApi = Write-JsonFile 'p360-env-api.json' @{
+    Variables = @{
+        ALLOWED_ORIGIN       = $AllowedOrigin
+        CATALOG_TABLE        = $CatalogTable
+        ORDERS_TABLE         = $OrdersTable
+        NOTIFICACIONES_TABLE = $Mensajeria.tablaNotificaciones
+        TOPIC_ARN            = $TopicArn
+        ATRIBUTO_FILTRO      = $Mensajeria.atributoFiltro
+    }
+}
+$envVars = "file://$envApi"
 
 foreach ($ep in $Endpoints) {
     $fn = "$Prefijo-$($ep.Nombre)"
@@ -334,7 +346,6 @@ function Get-QueueAttrs([string]$Url) {
 }
 
 Write-Step 'Topic SNS (estándar)'
-$TopicArn = "arn:aws:sns:${Region}:${AccountId}:$($Mensajeria.topic)"
 if (Test-AwsSuccess { aws sns get-topic-attributes --topic-arn $TopicArn --region $Region }) {
     Write-Skip "ya existe: $($Mensajeria.topic)"
 } elseif ($PSCmdlet.ShouldProcess($Mensajeria.topic, 'crear topic')) {
@@ -525,12 +536,16 @@ foreach ($c in $Mensajeria.consumidores) {
             if ($LASTEXITCODE -ne 0) { throw "No se pudo conectar $($c.cola) con $($c.funcion)." }
             Write-Ok "creado:      $($c.cola)  ->  $($c.funcion)"
         }
-    } elseif ([string]$m.BatchSize -ne $lote -or $m.FunctionResponseTypes -notcontains 'ReportBatchItemFailures') {
-        if ($PSCmdlet.ShouldProcess("$($c.cola) -> $($c.funcion)", 'corregir trigger')) {
-            aws lambda update-event-source-mapping --uuid $m.UUID `
+    } elseif ([string]$m.BatchSize -ne $lote -or $m.FunctionResponseTypes -notcontains 'ReportBatchItemFailures' -or
+              $m.State -in @('Disabled', 'Disabling')) {
+        # en aws academy, al terminar la sesion el LabRole pierde los permisos de
+        # sqs y lambda apaga el trigger; al volver no se enciende solo. los
+        # mensajes no se pierden: esperan en la cola hasta que se encienda
+        if ($PSCmdlet.ShouldProcess("$($c.cola) -> $($c.funcion)", 'corregir y encender trigger')) {
+            aws lambda update-event-source-mapping --uuid $m.UUID --enabled `
                 --batch-size $lote --function-response-types ReportBatchItemFailures --region $Region | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "No se pudo actualizar el trigger de $($c.funcion)." }
-            Write-Ok "actualizado: $($c.cola)  ->  $($c.funcion)  (lote $lote, errores por mensaje)"
+            Write-Ok "actualizado: $($c.cola)  ->  $($c.funcion)  (lote $lote, errores por mensaje, activo)"
         }
     } else {
         Write-Skip "ya está bien: $($c.cola)  ->  $($c.funcion)"

@@ -7,6 +7,13 @@
 // cargarse
 process.env.STORE = 'memory';
 
+// los handlers avisan en el log cada evento que publican; en las pruebas eso
+// solo mete ruido entre los resultados
+const logOriginal = console.log;
+console.log = (...a) => {
+  if (!String(a[0]).startsWith('evento ')) logOriginal(...a);
+};
+
 // por lo mismo el import es dinamico: uno normal se evalua antes que la
 // linea de arriba y los handlers terminarian usando dynamodb
 const h = {
@@ -309,6 +316,56 @@ comprobar('la boleta desglosa el IVA', b?.neto === 100000 && b?.iva === 19000 &&
   JSON.stringify(b));
 await consumir('boleta con total inválido', boleta.handler,
   sqsEvent(evento('PedidoDespachado', { total: 'abc' })), 'dlq');
+
+console.log('\n== Productor: la API publica los eventos ==');
+{
+  const { eventosEnMemoria, publicador } = await import('./lib/mensajeria.mjs');
+  eventosEnMemoria.length = 0; // los de las secciones anteriores no cuentan
+  const ultimo = () => eventosEnMemoria.at(-1);
+  const cuerpo = { items: [{ productoId: 'p-002', cantidad: 1 }] };
+
+  const creadoRes = await call('POST /api/orders', h.ordersPost,
+    ev('POST', '/api/orders', { ...CLIENTE, body: cuerpo }), 201);
+  const pid = creadoRes.body.id;
+  comprobar('crear un pedido publica PedidoCreado',
+    eventosEnMemoria.length === 1 && ultimo().type === 'PedidoCreado' && ultimo().pedidoId === pid,
+    ultimo()?.type);
+  comprobar('el evento trae lo que necesitan los consumidores',
+    ultimo().clienteId === CLIENTE.user && ultimo().total === creadoRes.body.total &&
+      Boolean(ultimo().items?.[0]?.nombre) && Boolean(ultimo().eventId),
+    `${ultimo().clienteId}, ${ultimo().items?.[0]?.nombre}, total ${ultimo().total}`);
+
+  const patch = (estado, quien = OPERADOR) =>
+    ev('PATCH', `/api/orders/${pid}/status`, { ...quien, id: pid, body: { estado } });
+
+  const cuenta = eventosEnMemoria.length;
+  await call('PATCH como Cliente', h.ordersStatus, patch('ACEPTADO', CLIENTE), 403);
+  await call('PATCH CREADO -> DESPACHADO', h.ordersStatus, patch('DESPACHADO'), 409);
+  comprobar('un cambio rechazado no publica nada', eventosEnMemoria.length === cuenta);
+
+  for (const [estado, tipo] of [
+    ['ACEPTADO', 'PedidoAceptado'],
+    ['EN_PREPARACION', 'PedidoEnPreparacion'],
+    ['DESPACHADO', 'PedidoDespachado'],
+    ['ENTREGADO', 'PedidoEntregado'],
+  ]) {
+    await call(`PATCH -> ${estado}`, h.ordersStatus, patch(estado), 200);
+    comprobar(`publica ${tipo}`, ultimo().type === tipo && ultimo().estado === estado, ultimo().type);
+  }
+
+  // sns caido: el pedido no puede depender de las notificaciones
+  const original = publicador.enviar;
+  publicador.enviar = async () => {
+    throw new Error('SNS no responde');
+  };
+  const { res, lineas } = await capturarLogs(() =>
+    h.ordersPost(ev('POST', '/api/orders', { ...CLIENTE, body: cuerpo })));
+  publicador.enviar = original;
+  const guardado = res.statusCode === 201 &&
+    (await compartido.obtenerPedido(JSON.parse(res.body).id)) !== null;
+  comprobar('si SNS falla, el pedido igual se crea', guardado, `HTTP ${res.statusCode}`);
+  comprobar('y el error queda en el log', lineas.some((l) => l.includes('no se pudo publicar PedidoCreado')));
+}
 
 console.log(fallos === 0 ? '\nTODAS LAS PRUEBAS PASARON' : `\n${fallos} PRUEBA(S) FALLARON`);
 process.exit(fallos === 0 ? 0 : 1);
