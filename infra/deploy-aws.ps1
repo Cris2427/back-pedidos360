@@ -17,10 +17,15 @@ param(
     [string]$AllowedOrigin = 'http://localhost:5173',
     # el rol con el que corren las lambdas, en aws academy es LabRole
     # necesita permisos basicos de lambda y acceso a las dos tablas
-    [string]$RoleName      = 'LabRole'
+    [string]$RoleName      = 'LabRole',
+    # nodejs20.x quedo obsoleto en abril de 2026 y la consola ya no lo ofrece
+    [string]$Runtime       = 'nodejs24.x'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# todos los nombres de la mensajeria salen de este archivo
+$Mensajeria = Get-Content (Join-Path $PSScriptRoot 'mensajeria.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
 # las 10 lambdas, una por metodo y ruta
 # el scope es el mismo que revisa cada lambda: el gateway lo exige antes
@@ -48,6 +53,13 @@ function Write-JsonFile {
     param([string]$Name, $Value)
     $path = Join-Path $env:TEMP $Name
     [System.IO.File]::WriteAllText($path, ($Value | ConvertTo-Json -Compress -Depth 10))
+    return $path
+}
+
+function Write-TextFile {
+    param([string]$Name, [string]$Value)
+    $path = Join-Path $env:TEMP $Name
+    [System.IO.File]::WriteAllText($path, $Value)
     return $path
 }
 
@@ -89,7 +101,7 @@ if (-not $SourceDir) {
 
 # tablas
 Write-Step 'Tablas de DynamoDB'
-foreach ($table in @($CatalogTable, $OrdersTable)) {
+foreach ($table in @($CatalogTable, $OrdersTable, $Mensajeria.tablaNotificaciones)) {
     if (Test-AwsSuccess { aws dynamodb describe-table --table-name $table --region $Region }) {
         Write-Skip "ya existe: $table"
         continue
@@ -135,12 +147,12 @@ if ([int]$cuenta -gt 0) {
 # un solo zip para las 10 funciones, cada una apunta a un handler distinto
 # adentro, asi el codigo de lib/ no se copia diez veces
 Write-Step 'Empaquetando el código'
-foreach ($carpeta in @('handlers', 'lib')) {
+foreach ($carpeta in @('handlers', 'consumers', 'lib')) {
     if (-not (Test-Path (Join-Path $SourceDir $carpeta))) {
         throw "No se encontró la carpeta $carpeta en $SourceDir"
     }
 }
-$fuentes = @('handlers', 'lib') | ForEach-Object { Join-Path $SourceDir $_ }
+$fuentes = @('handlers', 'consumers', 'lib') | ForEach-Object { Join-Path $SourceDir $_ }
 # -Force pisa el zip anterior
 # no usamos Remove-Item porque respeta -WhatIf y Compress-Archive no, asi que
 # en el ensayo quedaba el archivo viejo y fallaba
@@ -161,7 +173,8 @@ foreach ($ep in $Endpoints) {
             if ($LASTEXITCODE -ne 0) { throw "Falló la actualización del código de $fn." }
             aws lambda wait function-updated --function-name $fn --region $Region | Out-Null
             aws lambda update-function-configuration `
-                --function-name $fn --handler $ep.Handler --environment $envVars --timeout 10 `
+                --function-name $fn --handler $ep.Handler --runtime $Runtime `
+                --environment $envVars --timeout 10 `
                 --region $Region | Out-Null
             aws lambda wait function-updated --function-name $fn --region $Region | Out-Null
             Write-Ok "actualizada: $fn"
@@ -170,7 +183,7 @@ foreach ($ep in $Endpoints) {
         if ($PSCmdlet.ShouldProcess($fn, 'crear')) {
             aws lambda create-function `
                 --function-name $fn `
-                --runtime nodejs20.x `
+                --runtime $Runtime `
                 --handler $ep.Handler `
                 --role $RoleArn `
                 --zip-file "fileb://$ZipPath" `
@@ -307,10 +320,228 @@ foreach ($ep in $Endpoints) {
 }
 Write-Ok "$agregados permiso(s) agregado(s); el resto ya los tenía"
 
+# ======================= mensajeria =======================
+# todo sale de infra/mensajeria.json; igual que con las rutas, se crea lo que
+# falta y se corrige lo que no calza, asi lo hecho en la consola se respeta
+
+function Get-QueueUrl([string]$Nombre) {
+    if (-not (Test-AwsSuccess { aws sqs get-queue-url --queue-name $Nombre --region $Region })) { return $null }
+    return aws sqs get-queue-url --queue-name $Nombre --region $Region --query QueueUrl --output text
+}
+
+function Get-QueueAttrs([string]$Url) {
+    return (aws sqs get-queue-attributes --queue-url $Url --attribute-names All --region $Region | ConvertFrom-Json).Attributes
+}
+
+Write-Step 'Topic SNS (estándar)'
+$TopicArn = "arn:aws:sns:${Region}:${AccountId}:$($Mensajeria.topic)"
+if (Test-AwsSuccess { aws sns get-topic-attributes --topic-arn $TopicArn --region $Region }) {
+    Write-Skip "ya existe: $($Mensajeria.topic)"
+} elseif ($PSCmdlet.ShouldProcess($Mensajeria.topic, 'crear topic')) {
+    aws sns create-topic --name $Mensajeria.topic --region $Region | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo crear el topic $($Mensajeria.topic)." }
+    Write-Ok "creado:      $($Mensajeria.topic)"
+}
+
+Write-Step 'Colas SQS (cada una con su DLQ)'
+$retencionDlq = [string]([int]$Mensajeria.retencionDlqDias * 86400)
+$Colas = @{}
+foreach ($c in $Mensajeria.consumidores) {
+    # primero la dlq: la cola principal la necesita para su redrive policy
+    $dlqUrl = Get-QueueUrl $c.dlq
+    if (-not $dlqUrl) {
+        if ($PSCmdlet.ShouldProcess($c.dlq, 'crear DLQ')) {
+            $f = Write-JsonFile 'p360-attrs.json' @{ MessageRetentionPeriod = $retencionDlq }
+            $dlqUrl = aws sqs create-queue --queue-name $c.dlq --attributes "file://$f" --region $Region --query QueueUrl --output text
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo crear la cola $($c.dlq)." }
+            Write-Ok "creada:      $($c.dlq)"
+        }
+    } elseif ((Get-QueueAttrs $dlqUrl).MessageRetentionPeriod -ne $retencionDlq) {
+        # la dlq guarda mas tiempo que la cola principal, para alcanzar a revisarla
+        if ($PSCmdlet.ShouldProcess($c.dlq, "retención de $($Mensajeria.retencionDlqDias) días")) {
+            $f = Write-JsonFile 'p360-attrs.json' @{ MessageRetentionPeriod = $retencionDlq }
+            aws sqs set-queue-attributes --queue-url $dlqUrl --attributes "file://$f" --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo actualizar la cola $($c.dlq)." }
+            Write-Ok "actualizada: $($c.dlq)  (retención $($Mensajeria.retencionDlqDias) días)"
+        }
+    } else {
+        Write-Skip "ya está bien: $($c.dlq)"
+    }
+
+    $dlqArn = "arn:aws:sqs:${Region}:${AccountId}:$($c.dlq)"
+    $colaArn = "arn:aws:sqs:${Region}:${AccountId}:$($c.cola)"
+    $redrive = @{ deadLetterTargetArn = $dlqArn; maxReceiveCount = [int]$Mensajeria.maxReceiveCount } | ConvertTo-Json -Compress
+    # sin este permiso el topic no puede escribir en la cola, y los mensajes
+    # se pierden sin ningun error a la vista
+    $politica = @{
+        Version   = '2012-10-17'
+        Statement = @(@{
+            Sid       = "topic-$($Mensajeria.topic)"
+            Effect    = 'Allow'
+            Principal = @{ Service = 'sns.amazonaws.com' }
+            Action    = 'sqs:SendMessage'
+            Resource  = $colaArn
+            Condition = @{ ArnEquals = @{ 'aws:SourceArn' = $TopicArn } }
+        })
+    } | ConvertTo-Json -Compress -Depth 10
+
+    $url = Get-QueueUrl $c.cola
+    if (-not $url) {
+        if ($PSCmdlet.ShouldProcess($c.cola, 'crear cola')) {
+            $f = Write-JsonFile 'p360-attrs.json' @{
+                VisibilityTimeout = [string]$Mensajeria.visibilidadSegundos
+                RedrivePolicy     = $redrive
+                Policy            = $politica
+            }
+            aws sqs create-queue --queue-name $c.cola --attributes "file://$f" --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo crear la cola $($c.cola)." }
+            Write-Ok "creada:      $($c.cola)  ->  $($c.dlq)"
+        }
+    } else {
+        $a = Get-QueueAttrs $url
+        $cambios = @{}
+        if ($a.VisibilityTimeout -ne [string]$Mensajeria.visibilidadSegundos) {
+            $cambios.VisibilityTimeout = [string]$Mensajeria.visibilidadSegundos
+        }
+        $actual = if ($a.RedrivePolicy) { $a.RedrivePolicy | ConvertFrom-Json } else { $null }
+        if (-not $actual -or $actual.deadLetterTargetArn -ne $dlqArn -or
+            [int]$actual.maxReceiveCount -ne [int]$Mensajeria.maxReceiveCount) {
+            $cambios.RedrivePolicy = $redrive
+        }
+        if (-not ($a.Policy -and $a.Policy -like "*$TopicArn*" -and $a.Policy -like '*sqs:SendMessage*')) {
+            $cambios.Policy = $politica
+        }
+        if ($cambios.Count -eq 0) {
+            Write-Skip "ya está bien: $($c.cola)  ->  $($c.dlq)"
+        } elseif ($PSCmdlet.ShouldProcess($c.cola, "corregir $($cambios.Keys -join ', ')")) {
+            $f = Write-JsonFile 'p360-attrs.json' $cambios
+            aws sqs set-queue-attributes --queue-url $url --attributes "file://$f" --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo actualizar la cola $($c.cola)." }
+            Write-Ok "actualizada: $($c.cola)  ($($cambios.Keys -join ', '))"
+        }
+    }
+    $Colas[$c.cola] = $colaArn
+}
+
+Write-Step 'Suscripciones del topic (filtro + entrega sin procesar)'
+$subs = @()
+if (Test-AwsSuccess { aws sns get-topic-attributes --topic-arn $TopicArn --region $Region }) {
+    $subs = @((aws sns list-subscriptions-by-topic --topic-arn $TopicArn --region $Region | ConvertFrom-Json).Subscriptions)
+}
+foreach ($c in $Mensajeria.consumidores) {
+    $colaArn = $Colas[$c.cola]
+    $filtro = $c.filtro | ConvertTo-Json -Compress -Depth 10
+    $sub = $subs | Where-Object { $_.Endpoint -eq $colaArn } | Select-Object -First 1
+
+    if (-not $sub) {
+        if ($PSCmdlet.ShouldProcess($c.cola, 'suscribir al topic')) {
+            $f = Write-JsonFile 'p360-sub.json' @{
+                RawMessageDelivery = 'true'
+                FilterPolicyScope  = 'MessageAttributes'
+                FilterPolicy       = $filtro
+            }
+            aws sns subscribe --topic-arn $TopicArn --protocol sqs --notification-endpoint $colaArn `
+                --attributes "file://$f" --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo suscribir $($c.cola) al topic." }
+            Write-Ok "suscrita:    $($c.cola)  $filtro"
+        }
+        continue
+    }
+
+    $a = (aws sns get-subscription-attributes --subscription-arn $sub.SubscriptionArn --region $Region | ConvertFrom-Json).Attributes
+    $filtroActual = if ($a.FilterPolicy) { $a.FilterPolicy | ConvertFrom-Json | ConvertTo-Json -Compress -Depth 10 } else { '' }
+    $cambios = [ordered]@{}
+    if ($a.RawMessageDelivery -ne 'true') { $cambios.RawMessageDelivery = 'true' }
+    if ($filtroActual -ne $filtro) { $cambios.FilterPolicy = $filtro }
+    if ($a.FilterPolicyScope -and $a.FilterPolicyScope -ne 'MessageAttributes') { $cambios.FilterPolicyScope = 'MessageAttributes' }
+
+    if ($cambios.Count -eq 0) {
+        Write-Skip "ya está bien: $($c.cola)  $filtro"
+    } elseif ($PSCmdlet.ShouldProcess($c.cola, "corregir $($cambios.Keys -join ', ')")) {
+        foreach ($k in $cambios.Keys) {
+            $f = Write-TextFile 'p360-valor.txt' $cambios[$k]
+            aws sns set-subscription-attributes --subscription-arn $sub.SubscriptionArn `
+                --attribute-name $k --attribute-value "file://$f" --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo actualizar $k de la suscripción de $($c.cola)." }
+        }
+        Write-Ok "actualizada: $($c.cola)  ($($cambios.Keys -join ', '))"
+    }
+}
+
+Write-Step 'Lambdas consumidoras (una por cola)'
+foreach ($c in $Mensajeria.consumidores) {
+    # cada consumidor recibe la url de su propia dlq; el script siempre deja
+    # la caida simulada apagada
+    $envFile = Write-JsonFile "p360-env-$($c.funcion).json" @{
+        Variables = @{
+            DLQ_URL              = [string](Get-QueueUrl $c.dlq)
+            MAX_RECEIVE_COUNT    = [string]$Mensajeria.maxReceiveCount
+            NOTIFICACIONES_TABLE = $Mensajeria.tablaNotificaciones
+            SIMULAR_CAIDA        = 'false'
+        }
+    }
+    $timeout = [string]$Mensajeria.timeoutConsumidorSegundos
+
+    if (Test-AwsSuccess { aws lambda get-function --function-name $c.funcion --region $Region }) {
+        if ($PSCmdlet.ShouldProcess($c.funcion, 'actualizar')) {
+            aws lambda update-function-code --function-name $c.funcion --zip-file "fileb://$ZipPath" --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Falló la actualización del código de $($c.funcion)." }
+            aws lambda wait function-updated --function-name $c.funcion --region $Region | Out-Null
+            aws lambda update-function-configuration `
+                --function-name $c.funcion --handler $c.handler --runtime $Runtime `
+                --environment "file://$envFile" --timeout $timeout --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Falló la configuración de $($c.funcion)." }
+            aws lambda wait function-updated --function-name $c.funcion --region $Region | Out-Null
+            Write-Ok "actualizada: $($c.funcion)  ($($c.dominio))"
+        }
+    } elseif ($PSCmdlet.ShouldProcess($c.funcion, 'crear')) {
+        aws lambda create-function `
+            --function-name $c.funcion --runtime $Runtime --handler $c.handler `
+            --role $RoleArn --zip-file "fileb://$ZipPath" --timeout $timeout `
+            --environment "file://$envFile" --region $Region | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Falló la creación de $($c.funcion)." }
+        aws lambda wait function-active-v2 --function-name $c.funcion --region $Region | Out-Null
+        Write-Ok "creada:      $($c.funcion)  ($($c.dominio))"
+    }
+}
+
+Write-Step 'Triggers SQS (informando errores por mensaje)'
+$lote = [string]$Mensajeria.tamanoLote
+foreach ($c in $Mensajeria.consumidores) {
+    $colaArn = $Colas[$c.cola]
+    if (-not (Test-AwsSuccess { aws lambda get-function --function-name $c.funcion --region $Region })) {
+        Write-Skip "sin función todavía: $($c.funcion)"
+        continue
+    }
+    $m = (aws lambda list-event-source-mappings --function-name $c.funcion --event-source-arn $colaArn `
+        --region $Region | ConvertFrom-Json).EventSourceMappings | Select-Object -First 1
+
+    # sin ReportBatchItemFailures lambda ignora los batchItemFailures del
+    # codigo y borra el lote entero aunque un mensaje haya fallado
+    if (-not $m) {
+        if ($PSCmdlet.ShouldProcess("$($c.cola) -> $($c.funcion)", 'crear trigger')) {
+            aws lambda create-event-source-mapping --function-name $c.funcion --event-source-arn $colaArn `
+                --batch-size $lote --function-response-types ReportBatchItemFailures --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo conectar $($c.cola) con $($c.funcion)." }
+            Write-Ok "creado:      $($c.cola)  ->  $($c.funcion)"
+        }
+    } elseif ([string]$m.BatchSize -ne $lote -or $m.FunctionResponseTypes -notcontains 'ReportBatchItemFailures') {
+        if ($PSCmdlet.ShouldProcess("$($c.cola) -> $($c.funcion)", 'corregir trigger')) {
+            aws lambda update-event-source-mapping --uuid $m.UUID `
+                --batch-size $lote --function-response-types ReportBatchItemFailures --region $Region | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "No se pudo actualizar el trigger de $($c.funcion)." }
+            Write-Ok "actualizado: $($c.cola)  ->  $($c.funcion)  (lote $lote, errores por mensaje)"
+        }
+    } else {
+        Write-Skip "ya está bien: $($c.cola)  ->  $($c.funcion)"
+    }
+}
+
 Write-Step 'Listo'
 Write-Host "    Base URL: https://$ApiId.execute-api.$Region.amazonaws.com" -ForegroundColor Green
 Write-Host "    Lambdas:  $($Endpoints.Count) (una por método y ruta)" -ForegroundColor Green
-Write-Host "    Tablas:   $CatalogTable · $OrdersTable" -ForegroundColor Green
+Write-Host "    Tablas:   $CatalogTable · $OrdersTable · $($Mensajeria.tablaNotificaciones)" -ForegroundColor Green
+Write-Host "    Topic:    $($Mensajeria.topic) -> $(($Mensajeria.consumidores | ForEach-Object { $_.cola }) -join ', ')" -ForegroundColor Green
 Write-Host "    Prueba:   corepack pnpm dev  ->  entra a /catalog y /orders`n"
 
 # sin esto el script se queda con el codigo de salida del ultimo aws (254 si

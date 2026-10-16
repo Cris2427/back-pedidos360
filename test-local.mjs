@@ -206,5 +206,109 @@ comprobar('no choca con los ids sembrados (p-001..p-003)',
 console.log('\n== Preflight ==');
 await call('OPTIONS no lo bloquea el rol', h.ordersGet, ev('OPTIONS', '/api/orders', { roles: '' }), 204);
 
+// ===========================================================================
+// consumidores: eventos armados como los que entrega sqs, la dlq es una lista
+// en memoria y los logs se capturan para revisar que cada decision quede escrita
+const { dlqEnMemoria, crearConsumidor } = await import('./lib/mensajeria.mjs');
+const { config } = await import('./lib/config.mjs');
+const email = await import('./consumers/notificar-email.mjs');
+const bodega = await import('./consumers/preparar-pedido.mjs');
+const boleta = await import('./consumers/generar-boleta.mjs');
+
+let nMsg = 0;
+const sqsEvent = (...cuerpos) => ({
+  Records: cuerpos.map((c) => ({
+    messageId: `m-${++nMsg}`,
+    body: typeof c === 'string' ? c : JSON.stringify(c),
+    attributes: { ApproximateReceiveCount: '1' },
+  })),
+});
+const evento = (type, extra = {}) => ({
+  type, eventId: `e-${++nMsg}`, pedidoId: 'o-900', clienteId: 'cliente@duoc.cl', ...extra,
+});
+const notifs = async (canal) => (await compartido.listarNotificaciones()).filter((n) => n.canal === canal);
+
+const capturarLogs = async (fn) => {
+  const lineas = [];
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  console.log = console.warn = console.error = (...a) => lineas.push(a.join(' '));
+  try {
+    return { res: await fn(), lineas };
+  } finally {
+    Object.assign(console, original);
+  }
+};
+
+// la decision se deduce de lo que devuelve el handler y de la dlq, y ademas
+// tiene que quedar escrita en el log
+const consumir = async (etiqueta, handler, event, esperado) => {
+  const antes = dlqEnMemoria.length;
+  const { res, lineas } = await capturarLogs(() => handler(event));
+  const decision = res.batchItemFailures.length > 0 ? 'reintento'
+    : dlqEnMemoria.length > antes ? 'dlq' : 'ack';
+  const enLog = lineas.some((l) => l.includes(` ${decision.toUpperCase()} `));
+  comprobar(`${etiqueta}: ${esperado}`, decision === esperado && enLog, enLog ? decision : `${decision}, sin log`);
+};
+
+console.log('\n== Consumidores: ACK, reintento y DLQ ==');
+const creado = evento('PedidoCreado');
+await consumir('correo de PedidoCreado', email.handler, sqsEvent(creado), 'ack');
+await consumir('el mismo mensaje entregado dos veces', email.handler, sqsEvent(creado), 'ack');
+comprobar('idempotencia: un solo correo registrado', (await notifs('email')).length === 1,
+  `${(await notifs('email')).length} correo(s)`);
+await consumir('cuerpo que no es JSON', email.handler, sqsEvent('esto no es json'), 'dlq');
+await consumir('evento sin eventId', email.handler,
+  sqsEvent({ type: 'PedidoCreado', pedidoId: 'o-900', clienteId: 'x@duoc.cl' }), 'dlq');
+await consumir('correo sin clienteId', email.handler, sqsEvent(evento('PedidoCreado', { clienteId: undefined })), 'dlq');
+await consumir('tipo de evento desconocido', email.handler, sqsEvent(evento('PedidoRaro')), 'dlq');
+comprobar('la DLQ guarda el motivo', String(dlqEnMemoria.at(-1)?.motivo).includes('desconocido'),
+  dlqEnMemoria.at(-1)?.motivo);
+
+config.mensajeria.simularCaida = true;
+const antesCaida = dlqEnMemoria.length;
+await consumir('servicio caído (recuperable)', email.handler, sqsEvent(evento('PedidoAceptado')), 'reintento');
+comprobar('un error recuperable no va directo a la DLQ', dlqEnMemoria.length === antesCaida);
+config.mensajeria.simularCaida = false;
+
+// lote de dos: solo se devuelve el que fallo, el otro se confirma
+const parcial = crearConsumidor('prueba-lote', async (e) => {
+  if (e.pedidoId === 'o-falla') throw new Error('timeout de un servicio');
+  return 'ok';
+});
+const lote = sqsEvent(evento('PedidoCreado'), evento('PedidoCreado', { pedidoId: 'o-falla' }));
+const { res: resLote } = await capturarLogs(() => parcial(lote));
+comprobar('en un lote solo se reintenta el mensaje que falló',
+  resLote.batchItemFailures.length === 1 &&
+    resLote.batchItemFailures[0].itemIdentifier === lote.Records[1].messageId,
+  JSON.stringify(resLote.batchItemFailures));
+
+const dlqCaida = crearConsumidor('prueba-dlq-caida', email.procesar, {
+  enviarADlq: async () => { throw new Error('la DLQ no responde'); },
+});
+await consumir('si la DLQ no responde, se reintenta en vez de perderlo', dlqCaida, sqsEvent('roto'), 'reintento');
+
+console.log('\n== Bodega y facturación ==');
+const items = [{ productoId: 'p-001', nombre: 'Notebook 14"', cantidad: 2, precio: 499990 }];
+await consumir('orden de preparación de PedidoAceptado', bodega.handler,
+  sqsEvent(evento('PedidoAceptado', { pedidoId: 'o-901', items })), 'ack');
+const ordenes = await notifs('bodega');
+comprobar('la orden lista lo que hay que preparar', ordenes[0]?.detalle?.[0] === '2 x Notebook 14"',
+  ordenes[0]?.detalle?.[0]);
+await consumir('el mismo pedido aceptado otra vez (otro eventId)', bodega.handler,
+  sqsEvent(evento('PedidoAceptado', { pedidoId: 'o-901', items })), 'ack');
+comprobar('idempotencia: una sola orden por pedido', (await notifs('bodega')).length === 1,
+  `${(await notifs('bodega')).length} orden(es)`);
+await consumir('bodega rechaza un PedidoDespachado', bodega.handler,
+  sqsEvent(evento('PedidoDespachado', { items })), 'dlq');
+await consumir('pedido aceptado sin ítems', bodega.handler, sqsEvent(evento('PedidoAceptado', { items: [] })), 'dlq');
+
+await consumir('boleta de PedidoDespachado', boleta.handler,
+  sqsEvent(evento('PedidoDespachado', { pedidoId: 'o-902', total: 119000 })), 'ack');
+const b = (await notifs('boleta'))[0]?.boleta;
+comprobar('la boleta desglosa el IVA', b?.neto === 100000 && b?.iva === 19000 && b?.total === 119000,
+  JSON.stringify(b));
+await consumir('boleta con total inválido', boleta.handler,
+  sqsEvent(evento('PedidoDespachado', { total: 'abc' })), 'dlq');
+
 console.log(fallos === 0 ? '\nTODAS LAS PRUEBAS PASARON' : `\n${fallos} PRUEBA(S) FALLARON`);
 process.exit(fallos === 0 ? 0 : 1);

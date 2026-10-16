@@ -1,0 +1,36 @@
+{
+  "topic": "pedidos360-eventos",
+  "atributoFiltro": "tipo_evento",
+  "maxReceiveCount": 3,
+  "visibilidadSegundos": 30,
+  "retencionDlqDias": 14,
+  "timeoutConsumidorSegundos": 5,
+  "tamanoLote": 1,
+  "tablaNotificaciones": "Pedidos360-Notificaciones",
+  "consumidores": [
+    {
+      "dominio": "notificaciones",
+      "cola": "q-email",
+      "dlq": "q-email-dlq",
+      "funcion": "notificar-email",
+      "handler": "consumers/notificar-email.handler",
+      "filtro": { "tipo_evento": [{ "prefix": "Pedido" }] }
+    },
+    {
+      "dominio": "bodega",
+      "cola": "q-warehouse",
+      "dlq": "q-warehouse-dlq",
+      "funcion": "preparar-pedido",
+      "handler": "consumers/preparar-pedido.handler",
+      "filtro": { "tipo_evento": ["PedidoAceptado"] }
+    },
+    {
+      "dominio": "facturacion",
+      "cola": "q-invoice",
+      "dlq": "q-invoice-dlq",
+      "funcion": "generar-boleta",
+      "handler": "consumers/generar-boleta.handler",
+      "filtro": { "tipo_evento": ["PedidoDespachado"] }
+    }
+  ]
+}
