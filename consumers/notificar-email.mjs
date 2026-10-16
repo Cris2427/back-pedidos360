@@ -27,6 +27,9 @@ export async function procesar(evento) {
     clienteId: evento.clienteId,
     titulo: `${asunto}: ${evento.pedidoId}`,
     eventId: evento.eventId,
+    // la hora del hecho, no la de proceso: con colas estandar el orden de
+    // llegada no esta garantizado
+    ocurridoEn: evento.timestamp ?? new Date().toISOString(),
     creadoEn: new Date().toISOString(),
   });
   if (!nuevo) return `duplicado, el correo del evento ${evento.eventId} ya se había enviado`;

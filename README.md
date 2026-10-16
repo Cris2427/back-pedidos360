@@ -4,7 +4,7 @@ Backend de los dominios **Pedidos** y **Catálogo** del sistema Pedidos360,
 detrás de un AWS API Gateway (HTTP API) protegido con un **JWT Authorizer de
 Microsoft Entra ID**.
 
-**Una Lambda por método y ruta**: 19 funciones independientes, cada una con su
+**Una Lambda por método y ruta**: 20 funciones independientes, cada una con su
 propio handler, sus propios logs y su propia configuración.
 
 Las **notificaciones** son asíncronas: los eventos de un pedido se publican en
@@ -33,6 +33,7 @@ handlers/            una función Lambda por archivo
   orders-put.mjs           PUT    /api/orders/{id}
   orders-status-patch.mjs  PATCH  /api/orders/{id}/status
   orders-delete.mjs        DELETE /api/orders/{id}
+  notifications-get.mjs    GET    /api/notifications
   admin-queues-get.mjs     GET    /api/admin/queues
   admin-queues-post.mjs    POST   /api/admin/queues
   admin-queues-delete.mjs  DELETE /api/admin/queues/{name}
@@ -56,10 +57,10 @@ infra/
   mensajeria.json             nombres de topic, colas, DLQ y filtros
   deploy-aws.ps1              despliega todo en AWS
   openapi-pedidos360.yaml     especificación de la API
-test-local.mjs       143 pruebas de la API, la mensajería y el administrador, sin AWS
+test-local.mjs       150 pruebas de la API, la mensajería y el administrador, sin AWS
 ```
 
-Las 19 funciones de la API y las 3 consumidoras comparten un mismo zip y se
+Las 20 funciones de la API y las 3 consumidoras comparten un mismo zip y se
 diferencian por su `handler`
 (`handlers/catalog-get.handler`, etc.). Así cada ruta es una Lambda distinta en
 AWS, pero el código común vive en un solo lugar.
@@ -98,6 +99,7 @@ borra un ámbito desde la consola, el endpoint sigue protegido.
 | `PUT /api/orders/{id}` | `orders.write` | `Cliente` (los suyos) · `Operador` |
 | `DELETE /api/orders/{id}` | `orders.write` | `Cliente` (los suyos) · `Operador` |
 | `PATCH /api/orders/{id}/status` | `orders.write` | `Operador` |
+| `GET /api/notifications` | `orders.read` | `Cliente` (sus correos y boletas) · `Operador` (todo) |
 | `GET`, `POST`, `DELETE` de `/api/admin/*` | `messaging.manage` | `Admin` |
 
 **El Admin no participa del CRUD de pedidos**: administra el catálogo, el
@@ -277,14 +279,15 @@ Tampoco se puede crear algo que ya existe, ni suscribir una DLQ a un topic.
 node test-local.mjs
 ```
 
-143 comprobaciones. Sobre las 10 funciones de pedidos y catálogo: permisos por
+150 comprobaciones. Sobre las 10 funciones de pedidos y catálogo: permisos por
 scope y por rol, validaciones, ciclo de estados, reglas de stock, aislamiento
 entre clientes, numeración correlativa de ids y las formas en que puede llegar
 el claim `roles`. Sobre el productor: que cada cambio de estado publique su
 evento, que un cambio rechazado no publique nada y que el pedido se guarde
 aunque SNS no responda. Sobre los consumidores: las tres decisiones (ACK,
 reintento, DLQ) y que cada una quede en el log, mensajes duplicados, lotes
-donde falla solo un mensaje y la DLQ caída. Sobre el administrador: permisos,
+donde falla solo un mensaje y la DLQ caída. Sobre las notificaciones: quién
+ve qué y que se ordenen por la hora del evento. Sobre el administrador: permisos,
 cada regla de validación, y cada caso de 404 y 409.
 
 Usa el store, el topic, la DLQ y la infraestructura de mensajería en memoria,

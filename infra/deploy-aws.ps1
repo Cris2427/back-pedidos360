@@ -41,6 +41,7 @@ $Endpoints = @(
     @{ Nombre = 'orders-put';        Handler = 'handlers/orders-put.handler';         Ruta = 'PUT /api/orders/{id}'; Scope = 'orders.write' }
     @{ Nombre = 'orders-status';     Handler = 'handlers/orders-status-patch.handler'; Ruta = 'PATCH /api/orders/{id}/status'; Scope = 'orders.write' }
     @{ Nombre = 'orders-delete';     Handler = 'handlers/orders-delete.handler';      Ruta = 'DELETE /api/orders/{id}'; Scope = 'orders.write' }
+    @{ Nombre = 'notifications-get'; Handler = 'handlers/notifications-get.handler'; Ruta = 'GET /api/notifications'; Scope = 'orders.read' }
     # microservicio administrador de la mensajeria, solo Admin
     @{ Nombre = 'admin-queues-get'; Handler = 'handlers/admin-queues-get.handler'; Ruta = 'GET /api/admin/queues'; Scope = 'messaging.manage' }
     @{ Nombre = 'admin-queues-post'; Handler = 'handlers/admin-queues-post.handler'; Ruta = 'POST /api/admin/queues'; Scope = 'messaging.manage' }

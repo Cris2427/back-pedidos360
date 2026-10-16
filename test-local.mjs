@@ -367,6 +367,39 @@ console.log('\n== Productor: la API publica los eventos ==');
   comprobar('y el error queda en el log', lineas.some((l) => l.includes('no se pudo publicar PedidoCreado')));
 }
 
+// usa lo que dejaron registrado los consumidores en las secciones anteriores
+console.log('\n== Notificaciones: quién ve qué ==');
+{
+  const notifGet = (await import('./handlers/notifications-get.mjs')).handler;
+  const pedir = async (quien) => JSON.parse((await notifGet(ev('GET', '/api/notifications', quien))).body);
+
+  const canalesOp = new Set((await pedir(OPERADOR)).map((n) => n.canal));
+  comprobar('el Operador ve los tres canales', ['email', 'bodega', 'boleta'].every((c) => canalesOp.has(c)),
+    [...canalesOp].join(', '));
+
+  const delCliente = await pedir(CLIENTE);
+  comprobar('el Cliente ve sus correos y sus boletas',
+    delCliente.some((n) => n.canal === 'email') && delCliente.some((n) => n.canal === 'boleta'));
+  comprobar('pero no las órdenes de bodega, que son internas', !delCliente.some((n) => n.canal === 'bodega'));
+  comprobar('y nada que sea de otro cliente', delCliente.every((n) => n.clienteId === CLIENTE.user));
+  const deOtro = await pedir(OTRO_CLIENTE);
+  comprobar('otro Cliente no ve las del primero', deOtro.every((n) => n.clienteId === OTRO_CLIENTE.user),
+    `${deOtro.length} propias`);
+  await call('el Admin no ve notificaciones de pedidos', notifGet, ev('GET', '/api/notifications', ADMIN), 403);
+
+  // llegan en desorden: se procesa primero el evento mas viejo, pero despues
+  const nueva = { canal: 'email', clienteId: 'orden@duoc.cl' };
+  await compartido.guardarNotificacion({
+    ...nueva, id: 'email#b', ocurridoEn: '2026-01-01T10:00:00.000Z', creadoEn: '2026-01-01T10:00:05.000Z',
+  });
+  await compartido.guardarNotificacion({
+    ...nueva, id: 'email#a', ocurridoEn: '2026-01-01T09:00:00.000Z', creadoEn: '2026-01-01T10:00:09.000Z',
+  });
+  const orden = (await pedir({ roles: '[Cliente]', user: 'orden@duoc.cl' })).map((n) => n.id);
+  comprobar('se ordenan por la hora del evento, no por la de llegada',
+    orden[0] === 'email#b' && orden[1] === 'email#a', orden.join(' antes que '));
+}
+
 // ===========================================================================
 // microservicio administrador: las mismas reglas que en aws, con el adaptador
 // en memoria

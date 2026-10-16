@@ -128,6 +128,30 @@ components:
       properties:
         eliminado: { type: string }
 
+    Notificacion:
+      type: object
+      description: Lo que registró uno de los consumidores de la mensajería.
+      properties:
+        id: { type: string, example: 'boleta#o-008' }
+        canal: { type: string, enum: [email, bodega, boleta] }
+        tipo: { type: string, example: PedidoDespachado }
+        pedidoId: { type: string, example: o-008 }
+        clienteId: { type: string }
+        titulo: { type: string, example: Boleta del pedido o-008 }
+        detalle:
+          type: array
+          items: { type: string }
+          description: Solo en las órdenes de bodega, lo que hay que preparar.
+        boleta:
+          type: object
+          description: Solo en las boletas.
+          properties:
+            neto: { type: integer }
+            iva: { type: integer }
+            total: { type: integer }
+        ocurridoEn: { type: string, format: date-time, description: Hora del evento. }
+        creadoEn: { type: string, format: date-time, description: Hora en que se procesó. }
+
     Mensajes:
       type: object
       properties:
@@ -550,6 +574,31 @@ paths:
         httpMethod: POST
         payloadFormatVersion: '2.0'
         uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-orders-status/invocations
+
+  # ---- notificaciones ----
+  /api/notifications:
+    get:
+      tags: [orders]
+      summary: Lo que hizo la mensajería con los pedidos
+      description: >-
+        Scope `orders.read`. El Operador ve todo (correos, órdenes de bodega y
+        boletas); un Cliente solo sus correos y sus boletas. Ordenadas por la
+        hora del evento, no por la de proceso: con colas estándar los mensajes
+        pueden procesarse en desorden.
+      security:
+        - entraJwt: [orders.read]
+      responses:
+        '200':
+          description: Notificaciones, la más reciente primero
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Notificacion' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-notifications-get/invocations
 
   # ---- microservicio administrador de la mensajeria ----
   /api/admin/queues:

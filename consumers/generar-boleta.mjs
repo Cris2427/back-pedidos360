@@ -26,6 +26,9 @@ export async function procesar(evento) {
     titulo: `Boleta del pedido ${evento.pedidoId}`,
     boleta,
     eventId: evento.eventId,
+    // la hora del hecho, no la de proceso: con colas estandar el orden de
+    // llegada no esta garantizado
+    ocurridoEn: evento.timestamp ?? new Date().toISOString(),
     creadoEn: new Date().toISOString(),
   });
   if (!nuevo) return `duplicado, la boleta de ${evento.pedidoId} ya estaba emitida`;

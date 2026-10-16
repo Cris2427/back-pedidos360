@@ -25,6 +25,9 @@ export async function procesar(evento) {
     titulo: `Orden de preparación ${evento.pedidoId}`,
     detalle: lineas,
     eventId: evento.eventId,
+    // la hora del hecho, no la de proceso: con colas estandar el orden de
+    // llegada no esta garantizado
+    ocurridoEn: evento.timestamp ?? new Date().toISOString(),
     creadoEn: new Date().toISOString(),
   });
   if (!nuevo) return `duplicado, la orden de ${evento.pedidoId} ya estaba generada`;
