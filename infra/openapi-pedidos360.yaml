@@ -23,6 +23,10 @@ tags:
     description: Productos y stock (dominio Catálogo, del Admin)
   - name: orders
     description: Pedidos y su ciclo de estados (dominio Pedidos, del Cliente y el Operador)
+  - name: admin
+    description: >-
+      Microservicio administrador de la mensajería: colas SQS (con su DLQ),
+      topics SNS (exchanges) y suscripciones (bindings). Solo App Role Admin.
 
 # el cors va en el api porque el preflight OPTIONS viaja sin token, asi lo
 # responde el api gateway antes de llegar al authorizer
@@ -55,6 +59,13 @@ components:
       required: true
       schema:
         type: string
+    Name:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]+$'
 
   schemas:
     Product:
@@ -116,6 +127,110 @@ components:
       type: object
       properties:
         eliminado: { type: string }
+
+    Mensajes:
+      type: object
+      properties:
+        disponibles: { type: integer }
+        enProceso: { type: integer, description: Recibidos por un consumidor y todavía invisibles. }
+
+    NuevaCola:
+      type: object
+      required: [nombre]
+      additionalProperties: false
+      properties:
+        nombre:
+          type: string
+          maxLength: 76
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: >-
+            Sin tildes ni espacios y sin terminar en "-dlq": la DLQ se crea sola
+            con ese sufijo. Solo colas estándar, así que nada de ".fifo".
+          example: q-sms
+        maxReceiveCount:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 3
+          description: Intentos antes de que SQS mueva un mensaje a la DLQ.
+        visibilidadSegundos:
+          type: integer
+          minimum: 0
+          maximum: 43200
+          default: 30
+          description: Debe ser mayor que el timeout de la Lambda que consuma la cola.
+
+    Cola:
+      type: object
+      properties:
+        nombre: { type: string, example: q-email }
+        arn: { type: string }
+        visibilidadSegundos: { type: integer, example: 30 }
+        maxReceiveCount: { type: integer, nullable: true, example: 3 }
+        mensajes: { $ref: '#/components/schemas/Mensajes' }
+        dlq:
+          type: object
+          nullable: true
+          properties:
+            nombre: { type: string, example: q-email-dlq }
+            mensajes: { $ref: '#/components/schemas/Mensajes' }
+        consumidor:
+          type: string
+          nullable: true
+          description: La Lambda conectada a la cola, si hay una.
+          example: notificar-email
+
+    ColaEliminada:
+      type: object
+      properties:
+        eliminada: { type: string, example: q-sms }
+        dlq: { type: string, nullable: true, example: q-sms-dlq }
+
+    NuevoTopic:
+      type: object
+      required: [nombre]
+      additionalProperties: false
+      properties:
+        nombre: { type: string, maxLength: 256, pattern: '^[A-Za-z0-9_-]+$', example: pedidos360-eventos }
+
+    Topic:
+      type: object
+      properties:
+        nombre: { type: string, example: pedidos360-eventos }
+        arn: { type: string }
+        suscripciones: { type: integer, example: 3 }
+
+    FiltroSns:
+      type: object
+      maxProperties: 5
+      minProperties: 1
+      description: >-
+        Filter policy sobre los atributos del mensaje. Cada atributo lleva una
+        lista de valores exactos (exchange direct) u operadores como prefix
+        (exchange topic).
+      additionalProperties:
+        type: array
+        minItems: 1
+        items: {}
+      example: { tipo_evento: [{ prefix: Pedido }] }
+
+    NuevoBinding:
+      type: object
+      required: [topic, cola]
+      additionalProperties: false
+      properties:
+        topic: { type: string, example: pedidos360-eventos }
+        cola: { type: string, example: q-sms }
+        filtro: { $ref: '#/components/schemas/FiltroSns' }
+
+    Binding:
+      type: object
+      properties:
+        id: { type: string, description: Último tramo del ARN de la suscripción. }
+        topic: { type: string, example: pedidos360-eventos }
+        cola: { type: string, example: q-email }
+        filtro: { $ref: '#/components/schemas/FiltroSns' }
+        entregaSinProcesar: { type: boolean, example: true }
 
   responses:
     Unauthorized:
@@ -435,3 +550,225 @@ paths:
         httpMethod: POST
         payloadFormatVersion: '2.0'
         uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-orders-status/invocations
+
+  # ---- microservicio administrador de la mensajeria ----
+  /api/admin/queues:
+    get:
+      tags: [admin]
+      summary: Lista las colas, cada una con su DLQ, sus mensajes y su consumidor
+      description: Scope `messaging.manage` y App Role `Admin`. Las DLQ aparecen dentro de su cola.
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '200':
+          description: Colas
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Cola' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-queues-get/invocations
+
+    post:
+      tags: [admin]
+      summary: Crea una cola estándar y su DLQ, con la redrive policy
+      description: >-
+        Scope `messaging.manage` y App Role `Admin`. Crea primero `<nombre>-dlq`
+        y después la cola, apuntando a ella. Rechaza campos desconocidos.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NuevaCola' }
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '201':
+          description: Cola creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cola' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-queues-post/invocations
+
+  /api/admin/queues/{name}:
+    parameters:
+      - $ref: '#/components/parameters/Name'
+    delete:
+      tags: [admin]
+      summary: Borra una cola y su DLQ
+      description: >-
+        Scope `messaging.manage` y App Role `Admin`. Responde 409, sin borrar
+        nada, si la cola es la DLQ de otra, si una Lambda la consume, si está
+        suscrita a un topic o si ella o su DLQ tienen mensajes.
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '200':
+          description: Cola y DLQ eliminadas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ColaEliminada' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-queues-delete/invocations
+
+  /api/admin/topics:
+    get:
+      tags: [admin]
+      summary: Lista los topics (exchanges) con su cantidad de suscripciones
+      description: Scope `messaging.manage` y App Role `Admin`.
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '200':
+          description: Topics
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Topic' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-topics-get/invocations
+
+    post:
+      tags: [admin]
+      summary: Crea un topic estándar
+      description: Scope `messaging.manage` y App Role `Admin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NuevoTopic' }
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '201':
+          description: Topic creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Topic' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-topics-post/invocations
+
+  /api/admin/topics/{name}:
+    parameters:
+      - $ref: '#/components/parameters/Name'
+    delete:
+      tags: [admin]
+      summary: Borra un topic
+      description: Scope `messaging.manage` y App Role `Admin`. Responde 409 si todavía tiene suscripciones.
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '200':
+          description: Topic eliminado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Eliminado' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-topics-delete/invocations
+
+  /api/admin/bindings:
+    get:
+      tags: [admin]
+      summary: Lista las suscripciones de colas a topics, con su filtro
+      description: Scope `messaging.manage` y App Role `Admin`.
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '200':
+          description: Bindings
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Binding' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-bindings-get/invocations
+
+    post:
+      tags: [admin]
+      summary: Suscribe una cola a un topic (binding), con filtro opcional
+      description: >-
+        Scope `messaging.manage` y App Role `Admin`. Agrega a la cola el permiso
+        para que el topic le escriba y activa la entrega sin procesar. Una DLQ
+        no se puede suscribir.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NuevoBinding' }
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '201':
+          description: Binding creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Binding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-bindings-post/invocations
+
+  /api/admin/bindings/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    delete:
+      tags: [admin]
+      summary: Quita una suscripción
+      description: Scope `messaging.manage` y App Role `Admin`.
+      security:
+        - entraJwt: [messaging.manage]
+      responses:
+        '200':
+          description: Binding eliminado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Eliminado' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        payloadFormatVersion: '2.0'
+        uri: arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:<ACCOUNT_ID>:function:pedidos360-admin-bindings-delete/invocations

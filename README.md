@@ -4,12 +4,15 @@ Backend de los dominios **Pedidos** y **Catálogo** del sistema Pedidos360,
 detrás de un AWS API Gateway (HTTP API) protegido con un **JWT Authorizer de
 Microsoft Entra ID**.
 
-**Una Lambda por método y ruta**: 10 funciones independientes, cada una con su
+**Una Lambda por método y ruta**: 19 funciones independientes, cada una con su
 propio handler, sus propios logs y su propia configuración.
 
 Las **notificaciones** son asíncronas: los eventos de un pedido se publican en
 un topic de SNS que los reparte a tres colas SQS, cada una con su DLQ y su
 Lambda consumidora (correo, bodega y boleta).
+
+Un **microservicio administrador** crea y elimina por REST las colas, los
+topics y las suscripciones de esa mensajería.
 
 Frontend: [Cris2427/front-pedidos360](https://github.com/Cris2427/front-pedidos360)
 
@@ -30,6 +33,11 @@ handlers/            una función Lambda por archivo
   orders-put.mjs           PUT    /api/orders/{id}
   orders-status-patch.mjs  PATCH  /api/orders/{id}/status
   orders-delete.mjs        DELETE /api/orders/{id}
+  admin-queues-get.mjs     GET    /api/admin/queues
+  admin-queues-post.mjs    POST   /api/admin/queues
+  admin-queues-delete.mjs  DELETE /api/admin/queues/{name}
+  admin-topics-*.mjs       GET, POST y DELETE de /api/admin/topics
+  admin-bindings-*.mjs     GET, POST y DELETE de /api/admin/bindings
 consumers/           una Lambda por cola, agrupadas por dominio
   notificar-email.mjs      q-email      notificaciones al cliente
   preparar-pedido.mjs      q-warehouse  orden de preparación para bodega
@@ -38,17 +46,21 @@ lib/                 código compartido, sin duplicar
   config.mjs           lo único que lee variables de entorno
   auth.mjs             claims, scopes y App Roles del token
   http.mjs             respuestas, CORS y manejo de errores
-  mensajeria.mjs       ACK, reintento o DLQ de cada mensaje
+  errores.mjs          errores de negocio (no existe, en conflicto)
+  mensajeria.mjs       publicar eventos; ACK, reintento o DLQ de cada mensaje
+  admin-mensajeria.mjs el servicio administrador: reglas y adaptadores
+  validacion.mjs       validación de lo que recibe el administrador
   reglas.mjs           máquina de estados, validaciones e IVA
   store.mjs            acceso a DynamoDB (y doble en memoria para pruebas)
 infra/
   mensajeria.json             nombres de topic, colas, DLQ y filtros
   deploy-aws.ps1              despliega todo en AWS
   openapi-pedidos360.yaml     especificación de la API
-test-local.mjs       99 pruebas de la API, el productor y los consumidores, sin AWS
+test-local.mjs       143 pruebas de la API, la mensajería y el administrador, sin AWS
 ```
 
-Las 10 funciones comparten un mismo zip y se diferencian por su `handler`
+Las 19 funciones de la API y las 3 consumidoras comparten un mismo zip y se
+diferencian por su `handler`
 (`handlers/catalog-get.handler`, etc.). Así cada ruta es una Lambda distinta en
 AWS, pero el código común vive en un solo lugar.
 
@@ -86,10 +98,11 @@ borra un ámbito desde la consola, el endpoint sigue protegido.
 | `PUT /api/orders/{id}` | `orders.write` | `Cliente` (los suyos) · `Operador` |
 | `DELETE /api/orders/{id}` | `orders.write` | `Cliente` (los suyos) · `Operador` |
 | `PATCH /api/orders/{id}/status` | `orders.write` | `Operador` |
+| `GET`, `POST`, `DELETE` de `/api/admin/*` | `messaging.manage` | `Admin` |
 
-**El Admin no participa del CRUD de pedidos**: administra el catálogo y el
-stock. El Cliente y el Operador tienen el CRUD; solo el Operador avanza los
-estados.
+**El Admin no participa del CRUD de pedidos**: administra el catálogo, el
+stock y la mensajería. El Cliente y el Operador tienen el CRUD; solo el
+Operador avanza los estados.
 
 ## Reglas de negocio que aplica el servidor
 
@@ -193,23 +206,89 @@ veces, la segunda no se registra. La clave depende de qué no debe repetirse:
 Tipos: `PedidoCreado`, `PedidoAceptado`, `PedidoEnPreparacion`,
 `PedidoDespachado`, `PedidoEntregado` y `PedidoCancelado`.
 
+## Microservicio administrador
+
+Crea y elimina por REST lo que en RabbitMQ serían colas, exchanges y bindings:
+
+| RabbitMQ | Aquí |
+|---|---|
+| cola | cola SQS estándar, **con su DLQ** (`<nombre>-dlq`) y la redrive policy |
+| exchange | topic SNS estándar |
+| binding + routing key | suscripción del topic a la cola + filter policy |
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /api/admin/queues` | colas con su DLQ, sus mensajes y la Lambda que las consume |
+| `POST /api/admin/queues` | crea la DLQ y después la cola, apuntando a ella |
+| `DELETE /api/admin/queues/{name}` | borra la cola y su DLQ |
+| `GET /api/admin/topics` | topics con su cantidad de suscripciones |
+| `POST /api/admin/topics` | crea un topic |
+| `DELETE /api/admin/topics/{name}` | borra un topic |
+| `GET /api/admin/bindings` | suscripciones con su filtro |
+| `POST /api/admin/bindings` | suscribe una cola a un topic, le da permiso al topic para escribirle y activa la entrega sin procesar |
+| `DELETE /api/admin/bindings/{id}` | quita una suscripción |
+
+Todo exige el scope `messaging.manage` y el App Role `Admin`.
+
+### Un servicio, dos adaptadores
+
+Los handlers no conocen SQS ni SNS: validan y llaman a un método del servicio.
+[`lib/admin-mensajeria.mjs`](lib/admin-mensajeria.mjs) separa:
+
+- **el servicio**, con todas las reglas (qué se puede crear, qué no se puede
+  borrar), igual que un `RabbitAdminService`;
+- **los adaptadores**, que solo hablan con la infraestructura: uno con AWS y
+  otro en memoria con la misma interfaz, así las reglas se prueban sin AWS.
+
+El servicio no sabe de HTTP: lanza errores de negocio (*no existe*, *en
+conflicto*) y [`lib/http.mjs`](lib/http.mjs) los traduce a 404 y 409.
+
+### Validación
+
+[`lib/validacion.mjs`](lib/validacion.mjs) cumple el papel de los DTO con
+`@Valid`: recibe el cuerpo crudo y devuelve un objeto limpio o el motivo exacto
+del **400**, antes de llamar a AWS.
+
+- Nombres con las reglas de SQS y SNS: obligatorios, sin tildes ni espacios.
+- Una cola no puede pasar de 76 caracteres, porque su DLQ le agrega `-dlq` y
+  SQS permite 80; tampoco puede terminar en `-dlq`.
+- Solo recursos estándar: nada de `.fifo`.
+- `maxReceiveCount` entre 1 y 1000; visibilidad entre 0 y 43200 segundos.
+- Filtros con la forma que acepta SNS: hasta 5 atributos, cada uno con una
+  lista de valores u operadores conocidos (`prefix`, `anything-but`...).
+- **Campos desconocidos se rechazan**: un `maxRecieveCount` mal escrito no pasa
+  en silencio.
+
+### Reglas para no romper nada
+
+Antes de borrar, el servicio comprueba y responde **409** sin tocar nada si:
+
+- la cola es la DLQ de otra cola (se borra junto con esa);
+- una Lambda la está consumiendo;
+- está suscrita a un topic;
+- ella o su DLQ tienen mensajes (se perderían);
+- el topic todavía tiene suscripciones.
+
+Tampoco se puede crear algo que ya existe, ni suscribir una DLQ a un topic.
+
 ## Probar sin desplegar nada
 
 ```bash
 node test-local.mjs
 ```
 
-99 comprobaciones. Sobre las 10 funciones de la API: permisos por scope y por
-rol, validaciones, ciclo de estados, reglas de stock, aislamiento entre
-clientes, numeración correlativa de ids y las formas en que puede llegar el
-claim `roles`. Sobre el productor: que cada cambio de estado publique su
+143 comprobaciones. Sobre las 10 funciones de pedidos y catálogo: permisos por
+scope y por rol, validaciones, ciclo de estados, reglas de stock, aislamiento
+entre clientes, numeración correlativa de ids y las formas en que puede llegar
+el claim `roles`. Sobre el productor: que cada cambio de estado publique su
 evento, que un cambio rechazado no publique nada y que el pedido se guarde
 aunque SNS no responda. Sobre los consumidores: las tres decisiones (ACK,
 reintento, DLQ) y que cada una quede en el log, mensajes duplicados, lotes
-donde falla solo un mensaje y la DLQ caída.
+donde falla solo un mensaje y la DLQ caída. Sobre el administrador: permisos,
+cada regla de validación, y cada caso de 404 y 409.
 
-Usa el store, el topic y la DLQ en memoria, así que **no necesita credenciales de AWS ni
-red**.
+Usa el store, el topic, la DLQ y la infraestructura de mensajería en memoria,
+así que **no necesita credenciales de AWS ni red**.
 
 ## Desplegar
 
@@ -251,8 +330,12 @@ Las pone el script de despliegue y solo se leen en [`lib/config.mjs`](lib/config
 | `CATALOG_TABLE` | `Pedidos360-Catalog` | tabla de productos |
 | `ORDERS_TABLE` | `Pedidos360-Orders` | tabla de pedidos |
 | `NOTIFICACIONES_TABLE` | `Pedidos360-Notificaciones` | lo que registró cada consumidor |
+| `TOPIC_ARN` | *(vacío)* | topic donde la API publica los eventos |
+| `ATRIBUTO_FILTRO` | `tipo_evento` | atributo del mensaje que miran los filtros |
 | `DLQ_URL` | *(vacío)* | la DLQ de la cola que consume esa Lambda |
 | `MAX_RECEIVE_COUNT` | `3` | intentos antes de que SQS mueva un mensaje a la DLQ |
+| `VISIBILIDAD_SEGUNDOS` | `30` | visibilidad de las colas que crea el administrador |
+| `RETENCION_DLQ_DIAS` | `14` | retención de las DLQ que crea el administrador |
 | `SIMULAR_CAIDA` | `false` | `true` hace fallar al consumidor como si el servicio externo estuviera caído (demo de reintentos y *redrive*) |
 | `STORE` | *(vacío)* | `memory` fuerza el store y la DLQ en memoria (solo pruebas) |
 

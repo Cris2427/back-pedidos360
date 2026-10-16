@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Stop'
 # todos los nombres de la mensajeria salen de este archivo
 $Mensajeria = Get-Content (Join-Path $PSScriptRoot 'mensajeria.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 
-# las 10 lambdas, una por metodo y ruta
+# las lambdas de la api, una por metodo y ruta
 # el scope es el mismo que revisa cada lambda: el gateway lo exige antes
 # de invocarla, asi un token sin ese permiso ni siquiera la despierta
 $Endpoints = @(
@@ -41,6 +41,16 @@ $Endpoints = @(
     @{ Nombre = 'orders-put';        Handler = 'handlers/orders-put.handler';         Ruta = 'PUT /api/orders/{id}'; Scope = 'orders.write' }
     @{ Nombre = 'orders-status';     Handler = 'handlers/orders-status-patch.handler'; Ruta = 'PATCH /api/orders/{id}/status'; Scope = 'orders.write' }
     @{ Nombre = 'orders-delete';     Handler = 'handlers/orders-delete.handler';      Ruta = 'DELETE /api/orders/{id}'; Scope = 'orders.write' }
+    # microservicio administrador de la mensajeria, solo Admin
+    @{ Nombre = 'admin-queues-get'; Handler = 'handlers/admin-queues-get.handler'; Ruta = 'GET /api/admin/queues'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-queues-post'; Handler = 'handlers/admin-queues-post.handler'; Ruta = 'POST /api/admin/queues'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-queues-delete'; Handler = 'handlers/admin-queues-delete.handler'; Ruta = 'DELETE /api/admin/queues/{name}'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-topics-get'; Handler = 'handlers/admin-topics-get.handler'; Ruta = 'GET /api/admin/topics'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-topics-post'; Handler = 'handlers/admin-topics-post.handler'; Ruta = 'POST /api/admin/topics'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-topics-delete'; Handler = 'handlers/admin-topics-delete.handler'; Ruta = 'DELETE /api/admin/topics/{name}'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-bindings-get'; Handler = 'handlers/admin-bindings-get.handler'; Ruta = 'GET /api/admin/bindings'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-bindings-post'; Handler = 'handlers/admin-bindings-post.handler'; Ruta = 'POST /api/admin/bindings'; Scope = 'messaging.manage' }
+    @{ Nombre = 'admin-bindings-delete'; Handler = 'handlers/admin-bindings-delete.handler'; Ruta = 'DELETE /api/admin/bindings/{id}'; Scope = 'messaging.manage' }
 )
 
 function Write-Step($text) { Write-Host "`n=== $text" -ForegroundColor Cyan }
@@ -171,6 +181,10 @@ $envApi = Write-JsonFile 'p360-env-api.json' @{
         NOTIFICACIONES_TABLE = $Mensajeria.tablaNotificaciones
         TOPIC_ARN            = $TopicArn
         ATRIBUTO_FILTRO      = $Mensajeria.atributoFiltro
+        # lo que usa el administrador al crear una cola nueva
+        MAX_RECEIVE_COUNT    = [string]$Mensajeria.maxReceiveCount
+        VISIBILIDAD_SEGUNDOS = [string]$Mensajeria.visibilidadSegundos
+        RETENCION_DLQ_DIAS   = [string]$Mensajeria.retencionDlqDias
     }
 }
 $envVars = "file://$envApi"

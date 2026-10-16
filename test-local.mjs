@@ -44,10 +44,10 @@ const OTRO_CLIENTE = { roles: '[Cliente]', user: 'otro@duoc.cl' };
 // evento como los que manda el api gateway, con los claims en texto igual
 // que en aws
 const ev = (method, rawPath, opts = {}) => {
-  const { body, id, scp = SCOPES, roles = '[Admin]', user = 'x@duoc.cl' } = opts;
+  const { body, id, params, scp = SCOPES, roles = '[Admin]', user = 'x@duoc.cl' } = opts;
   return {
     rawPath,
-    pathParameters: id ? { id } : undefined,
+    pathParameters: params ?? (id ? { id } : undefined),
     body: body ? JSON.stringify(body) : undefined,
     requestContext: {
       http: { method },
@@ -365,6 +365,106 @@ console.log('\n== Productor: la API publica los eventos ==');
     (await compartido.obtenerPedido(JSON.parse(res.body).id)) !== null;
   comprobar('si SNS falla, el pedido igual se crea', guardado, `HTTP ${res.statusCode}`);
   comprobar('y el error queda en el log', lineas.some((l) => l.includes('no se pudo publicar PedidoCreado')));
+}
+
+// ===========================================================================
+// microservicio administrador: las mismas reglas que en aws, con el adaptador
+// en memoria
+console.log('\n== Administrador: permisos y validación ==');
+{
+  const imp = async (archivo) => (await import(`./handlers/${archivo}.mjs`)).handler;
+  const a = {
+    colasGet: await imp('admin-queues-get'),
+    colasPost: await imp('admin-queues-post'),
+    colasDelete: await imp('admin-queues-delete'),
+    topicsGet: await imp('admin-topics-get'),
+    topicsPost: await imp('admin-topics-post'),
+    topicsDelete: await imp('admin-topics-delete'),
+    bindingsGet: await imp('admin-bindings-get'),
+    bindingsPost: await imp('admin-bindings-post'),
+    bindingsDelete: await imp('admin-bindings-delete'),
+  };
+  const { simular } = (await import('./lib/admin-mensajeria.mjs')).crearAdminMensajeria();
+
+  const CON_SCOPE = `${SCOPES} messaging.manage`;
+  const req = (method, path, extra = {}) => ev(method, path, { ...ADMIN, scp: CON_SCOPE, ...extra });
+  const crearCola = (body) => req('POST', '/api/admin/queues', { body });
+  const crearTopic = (body) => req('POST', '/api/admin/topics', { body });
+  const crearBinding = (body) => req('POST', '/api/admin/bindings', { body });
+  const borrarCola = (nombre) => req('DELETE', `/api/admin/queues/${nombre}`, { params: { name: nombre } });
+  const borrarTopic = (nombre) => req('DELETE', `/api/admin/topics/${nombre}`, { params: { name: nombre } });
+
+  await call('Admin sin el scope messaging.manage', a.colasGet, ev('GET', '/api/admin/queues', { ...ADMIN }), 403);
+  await call('Operador con el scope pero sin el rol', a.colasGet,
+    ev('GET', '/api/admin/queues', { ...OPERADOR, scp: CON_SCOPE }), 403);
+
+  await call('cola sin nombre', a.colasPost, crearCola({}), 400);
+  await call('cola con espacios', a.colasPost, crearCola({ nombre: 'q mala' }), 400);
+  await call('cola con tilde', a.colasPost, crearCola({ nombre: 'q-notificación' }), 400);
+  await call('cola FIFO', a.colasPost, crearCola({ nombre: 'q-prueba.fifo' }), 400);
+  await call('nombre terminado en -dlq', a.colasPost, crearCola({ nombre: 'q-prueba-dlq' }), 400);
+  await call('77 caracteres (su DLQ pasaría de 80)', a.colasPost, crearCola({ nombre: 'q'.repeat(77) }), 400);
+  await call('maxReceiveCount 0', a.colasPost, crearCola({ nombre: 'q-prueba', maxReceiveCount: 0 }), 400);
+  await call('visibilidad negativa', a.colasPost, crearCola({ nombre: 'q-prueba', visibilidadSegundos: -1 }), 400);
+  await call('campo con error de tipeo', a.colasPost, crearCola({ nombre: 'q-prueba', maxRecieveCount: 3 }), 400);
+  await call('topic sin nombre', a.topicsPost, crearTopic({ nombre: '  ' }), 400);
+  await call('nombre inválido en la ruta', a.colasDelete, borrarCola('q mala'), 400);
+
+  console.log('\n== Administrador: crear colas, topics y bindings ==');
+  const cola = await call('POST /api/admin/queues', a.colasPost, crearCola({ nombre: 'q-prueba', maxReceiveCount: 5 }), 201);
+  comprobar('crea su DLQ con la redrive policy',
+    cola.body.dlq?.nombre === 'q-prueba-dlq' && cola.body.maxReceiveCount === 5, cola.body.dlq?.nombre);
+  comprobar('lo que no viene sale de la configuración', cola.body.visibilidadSegundos === 30,
+    `visibilidad ${cola.body.visibilidadSegundos} s`);
+  await call('la misma cola otra vez', a.colasPost, crearCola({ nombre: 'q-prueba' }), 409);
+  const colas = await call('GET /api/admin/queues', a.colasGet, req('GET', '/api/admin/queues'), 200);
+  comprobar('la DLQ aparece dentro de su cola, no suelta',
+    colas.body.some((c) => c.nombre === 'q-prueba') && !colas.body.some((c) => c.nombre === 'q-prueba-dlq'));
+
+  await call('POST /api/admin/topics', a.topicsPost, crearTopic({ nombre: 'eventos-prueba' }), 201);
+  await call('el mismo topic otra vez', a.topicsPost, crearTopic({ nombre: 'eventos-prueba' }), 409);
+
+  await call('binding a un topic que no existe', a.bindingsPost,
+    crearBinding({ topic: 'no-existe', cola: 'q-prueba' }), 404);
+  await call('binding a una cola que no existe', a.bindingsPost,
+    crearBinding({ topic: 'eventos-prueba', cola: 'q-no-existe' }), 404);
+  await call('filtro que no es una lista', a.bindingsPost,
+    crearBinding({ topic: 'eventos-prueba', cola: 'q-prueba', filtro: { tipo_evento: 'PedidoAceptado' } }), 400);
+  await call('filtro con un operador que no existe', a.bindingsPost,
+    crearBinding({ topic: 'eventos-prueba', cola: 'q-prueba', filtro: { tipo_evento: [{ empiezaCon: 'P' }] } }), 400);
+  await call('suscribir una DLQ', a.bindingsPost, crearBinding({ topic: 'eventos-prueba', cola: 'q-prueba-dlq' }), 409);
+  const binding = await call('POST /api/admin/bindings', a.bindingsPost,
+    crearBinding({ topic: 'eventos-prueba', cola: 'q-prueba', filtro: { tipo_evento: [{ prefix: 'Pedido' }] } }), 201);
+  await call('el mismo binding otra vez', a.bindingsPost, crearBinding({ topic: 'eventos-prueba', cola: 'q-prueba' }), 409);
+  const bindings = await call('GET /api/admin/bindings', a.bindingsGet, req('GET', '/api/admin/bindings'), 200);
+  comprobar('el binding guarda su filtro', bindings.body[0]?.filtro?.tipo_evento?.[0]?.prefix === 'Pedido',
+    JSON.stringify(bindings.body[0]?.filtro));
+
+  console.log('\n== Administrador: reglas para no romper nada ==');
+  await call('borrar un topic con bindings', a.topicsDelete, borrarTopic('eventos-prueba'), 409);
+  await call('borrar una cola suscrita a un topic', a.colasDelete, borrarCola('q-prueba'), 409);
+  await call('borrar un binding que no existe', a.bindingsDelete,
+    req('DELETE', '/api/admin/bindings/x', { id: 'no-existe' }), 404);
+  await call('DELETE /api/admin/bindings/{id}', a.bindingsDelete,
+    req('DELETE', `/api/admin/bindings/${binding.body.id}`, { id: binding.body.id }), 200);
+
+  await call('borrar la DLQ suelta', a.colasDelete, borrarCola('q-prueba-dlq'), 409);
+  simular.conectarConsumidor('q-prueba', 'una-lambda');
+  await call('borrar una cola que tiene consumidor', a.colasDelete, borrarCola('q-prueba'), 409);
+  simular.conectarConsumidor('q-prueba', null);
+  simular.encolar('q-prueba', 2);
+  await call('borrar una cola con mensajes pendientes', a.colasDelete, borrarCola('q-prueba'), 409);
+  simular.vaciar('q-prueba');
+  simular.encolar('q-prueba-dlq', 1);
+  await call('borrar una cola cuya DLQ tiene mensajes', a.colasDelete, borrarCola('q-prueba'), 409);
+  simular.vaciar('q-prueba-dlq');
+
+  const borrada = await call('DELETE /api/admin/queues/{name}', a.colasDelete, borrarCola('q-prueba'), 200);
+  comprobar('borra la cola junto con su DLQ', borrada.body.dlq === 'q-prueba-dlq', JSON.stringify(borrada.body));
+  await call('borrar una cola que ya no existe', a.colasDelete, borrarCola('q-prueba'), 404);
+  await call('DELETE /api/admin/topics/{name}', a.topicsDelete, borrarTopic('eventos-prueba'), 200);
+  const topics = await call('GET /api/admin/topics', a.topicsGet, req('GET', '/api/admin/topics'), 200);
+  comprobar('el topic ya no aparece', !topics.body.some((t) => t.nombre === 'eventos-prueba'));
 }
 
 console.log(fallos === 0 ? '\nTODAS LAS PRUEBAS PASARON' : `\n${fallos} PRUEBA(S) FALLARON`);
