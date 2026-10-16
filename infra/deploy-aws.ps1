@@ -14,7 +14,8 @@ param(
         '4af5ea55-a655-4bcb-b24c-9e315b1ee75c',
         'api://4af5ea55-a655-4bcb-b24c-9e315b1ee75c'
     ),
-    [string]$AllowedOrigin = 'http://localhost:5173',
+    # local para desarrollar y amplify para la app publicada
+    [string[]]$AllowedOrigins = @('http://localhost:5173', 'https://main.d2yxpu4vls3p92.amplifyapp.com'),
     # el rol con el que corren las lambdas, en aws academy es LabRole
     # necesita permisos basicos de lambda y acceso a las dos tablas
     [string]$RoleName      = 'LabRole',
@@ -176,7 +177,8 @@ Write-Step 'Funciones Lambda (una por método y ruta)'
 $TopicArn = "arn:aws:sns:${Region}:${AccountId}:$($Mensajeria.topic)"
 $envApi = Write-JsonFile 'p360-env-api.json' @{
     Variables = @{
-        ALLOWED_ORIGIN       = $AllowedOrigin
+        # el gateway ignora el cors de las lambdas cuando el api tiene el suyo
+        ALLOWED_ORIGIN       = $AllowedOrigins[0]
         CATALOG_TABLE        = $CatalogTable
         ORDERS_TABLE         = $OrdersTable
         NOTIFICACIONES_TABLE = $Mensajeria.tablaNotificaciones
@@ -319,13 +321,13 @@ foreach ($ep in $Endpoints) {
 Write-Step 'CORS del API'
 if ($PSCmdlet.ShouldProcess($ApiId, 'configurar CORS')) {
     $corsFile = Write-JsonFile 'pedidos360-cors.json' @{
-        AllowOrigins = @($AllowedOrigin)
+        AllowOrigins = @($AllowedOrigins)
         AllowMethods = @('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS')
         AllowHeaders = @('authorization', 'content-type')
         MaxAge       = 3600
     }
     aws apigatewayv2 update-api --api-id $ApiId --cors-configuration "file://$corsFile" --region $Region | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Ok "Origen permitido: $AllowedOrigin" }
+    if ($LASTEXITCODE -eq 0) { Write-Ok "Orígenes permitidos: $($AllowedOrigins -join ', ')" }
     else { throw 'Falló la actualización de CORS (revisa el error de arriba).' }
 }
 

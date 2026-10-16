@@ -33,6 +33,7 @@ tags:
 x-amazon-apigateway-cors:
   allowOrigins:
     - http://localhost:5173
+    - https://main.d2yxpu4vls3p92.amplifyapp.com
   allowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
   allowHeaders: [authorization, content-type]
   maxAge: 3600
