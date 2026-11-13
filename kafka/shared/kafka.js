@@ -10,20 +10,23 @@ const { Kafka, Partitioners, CompressionTypes } = kafkajs;
 // (TOPIC, BROKER) y los niveles de log
 export const { ConfigResourceTypes, logLevel } = kafkajs;
 
-if (!process.env.KAFKA_BROKERS) {
-  throw new Error('falta KAFKA_BROKERS: copia .env.example a .env');
+// Los 3 brokers, desde el .env. Con que uno responda basta: el cliente le
+// pide el mapa del clúster (metadata) y desde ahí sabe qué broker es líder
+// de cada partición. Se leen al crear el cliente y no al importar este
+// archivo: así las pruebas pueden importar el consumidor sin tener un .env.
+function leerBrokers() {
+  if (!process.env.KAFKA_BROKERS) {
+    throw new Error('falta KAFKA_BROKERS: copia .env.example a .env');
+  }
+  return process.env.KAFKA_BROKERS.split(',').map(b => b.trim());
 }
-
-// Los 3 brokers. Con que uno responda basta: el cliente le pide el mapa del
-// clúster (metadata) y desde ahí sabe qué broker es líder de cada partición.
-const brokers = process.env.KAFKA_BROKERS.split(',').map(b => b.trim());
 
 // ---------------------------------------------------------------- cliente
 
 export function crearKafka(clientId) {
   return new Kafka({
     clientId,                 // nombre del servicio; aparece en Kafka UI en los miembros de cada grupo
-    brokers,
+    brokers: leerBrokers(),
     connectionTimeout: 3000,  // ms para abrir la conexión con un broker
     requestTimeout: 30000,    // ms máximo esperando la respuesta de un broker
     // si un broker no responde, reintenta esperando cada vez el doble:
