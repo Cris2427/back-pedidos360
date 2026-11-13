@@ -17,7 +17,8 @@
     "admin": "node --env-file=.env --disable-warning=TimeoutNegativeWarning admin/server.js",
     "producer": "node --env-file=.env --disable-warning=TimeoutNegativeWarning bridge/producer.js",
     "report": "node --env-file=.env --disable-warning=TimeoutNegativeWarning report/consumer.js",
-    "audit": "node --env-file=.env --disable-warning=TimeoutNegativeWarning audit/consumer.js"
+    "audit": "node --env-file=.env --disable-warning=TimeoutNegativeWarning audit/consumer.js",
+    "timeline": "node --env-file=.env --disable-warning=TimeoutNegativeWarning audit/timeline.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

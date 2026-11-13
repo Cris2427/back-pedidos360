@@ -2,15 +2,7 @@
 // KPIs se entregan. No sabe de Kafka ni de SQL: trabaja con un repositorio
 // (repositorio.js), sea el de PostgreSQL o el de memoria.
 import { exigirTransicion } from '../shared/estados.js';
-
-// Un parámetro mal enviado a la API: responde 400
-export class ParametroInvalidoError extends Error {
-  constructor(mensaje) {
-    super(mensaje);
-    this.name = 'ParametroInvalidoError';
-    this.status = 400;
-  }
-}
+import { ParametroInvalidoError } from '../shared/http.js';
 
 // Aplica un evento al pedido, en este orden:
 //   1. si su eventId ya se aplicó, es un duplicado: no se cuenta de nuevo

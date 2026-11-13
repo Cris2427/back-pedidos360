@@ -3,8 +3,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { repositorioMemoria } from '../report/repositorio.js';
-import { aplicarEvento, ventasPorHora, topProductos, pedidosActivos, leadTime, resumen, ParametroInvalidoError } from '../report/kpis.js';
 import { crearApi } from '../report/api.js';
+import { aplicarEvento, ventasPorHora, topProductos, pedidosActivos, leadTime, resumen } from '../report/kpis.js';
+import { ParametroInvalidoError } from '../shared/http.js';
 import { TransicionInvalidaError } from '../shared/estados.js';
 import { generarEventos, resumen as resumenPublicado, armarPedido, eventoDe, casoSalto, casoDuplicado } from '../bridge/simulador.js';
 
