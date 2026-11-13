@@ -13,6 +13,7 @@
     "down": "docker compose down",
     "reset": "docker compose down -v",
     "topics": "node --env-file=.env --disable-warning=TimeoutNegativeWarning admin/setup.js",
+    "db": "node --env-file=.env db/setup.js",
     "admin": "node --env-file=.env --disable-warning=TimeoutNegativeWarning admin/server.js",
     "producer": "node --env-file=.env --disable-warning=TimeoutNegativeWarning bridge/producer.js",
     "report": "node --env-file=.env --disable-warning=TimeoutNegativeWarning report/consumer.js",
@@ -21,6 +22,7 @@
   "dependencies": {
     "cors": "^2.8.6",
     "express": "^4.21.2",
-    "kafkajs": "^2.2.4"
+    "kafkajs": "^2.2.4",
+    "pg": "^8.23.1"
   }
 }
