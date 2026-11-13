@@ -1,0 +1,143 @@
+# Clúster de Kafka para Pedidos360: ZooKeeper + 3 brokers + Kafka UI + PostgreSQL
+#   copiar .env.example a .env (solo la primera vez)
+#   docker compose up -d      (o npm run up)
+#   docker compose ps         los 6 contenedores en "running" (los brokers "healthy")
+#   Kafka UI: http://localhost:8080
+#   docker compose down       apaga todo; los datos quedan en los volúmenes
+#   docker compose down -v    apaga y BORRA los datos (o npm run reset)
+#
+# Por qué 3 brokers: cada partición tiene 3 copias (factor de replicación 3),
+# una en cada broker. Una es la líder (recibe las escrituras y atiende las
+# lecturas) y las otras dos la siguen copiando. Si se cae un broker, una copia
+# al día pasa a ser líder y nadie pierde datos.
+#
+# Por qué dos puertos por broker:
+#   kafka-N:29092  para los otros contenedores (los brokers entre sí y Kafka UI)
+#   localhost:909N para nuestro código Node, que corre en el computador
+#
+# Todos los puertos se abren solo en 127.0.0.1: los brokers y Kafka UI no piden
+# contraseña, así que no deben quedar visibles para otros equipos de la red
+# (por ejemplo, el wifi de la sede).
+
+# nombre propio: sin esto docker usa el nombre de la carpeta ("kafka") y se
+# mezcla con cualquier otro proyecto que viva en una carpeta llamada igual
+name: pedidos360-kafka
+
+x-broker: &broker
+  image: confluentinc/cp-kafka:7.5.0
+  depends_on: [zookeeper]
+  # Al apagarse, el broker traspasa sus particiones líderes y cierra su sesión
+  # en ZooKeeper. Docker da 10 s por defecto y no alcanza: se le dan 60.
+  stop_grace_period: 60s
+  # Si igual arranca antes de que ZooKeeper olvide la sesión anterior
+  # (error NodeExists), Docker lo vuelve a intentar hasta que entra
+  restart: on-failure
+  healthcheck:
+    test: ['CMD', 'kafka-broker-api-versions', '--bootstrap-server', 'localhost:29092']
+    interval: 10s
+    timeout: 10s
+    retries: 12
+    start_period: 20s
+
+x-broker-env: &broker-env
+  KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNO:PLAINTEXT,EXTERNO:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNO
+  # los tópicos los crea nuestro código (npm run topics), nunca Kafka por su cuenta
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+  # valores por defecto del clúster: 3 copias, y una escritura con acks=all
+  # necesita al menos 2 copias al día para aceptarse
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  # tópicos internos (offsets de los grupos y transacciones), también con 3 copias
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  # revisa cada 30 s si hay segmentos vencidos que borrar (para ver la retención en vivo)
+  KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 30000
+  # un grupo nuevo empieza a consumir sin esperar 3 s a que lleguen más miembros
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  # tres brokers en un computador: medio giga de memoria cada uno alcanza
+  KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: p360-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+
+  kafka-1:
+    <<: *broker
+    container_name: p360-kafka-1
+    ports: ['127.0.0.1:9092:9092']
+    environment:
+      <<: *broker-env
+      KAFKA_BROKER_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: INTERNO://kafka-1:29092,EXTERNO://localhost:9092
+    volumes: [kafka-1-data:/var/lib/kafka/data]
+
+  kafka-2:
+    <<: *broker
+    container_name: p360-kafka-2
+    ports: ['127.0.0.1:9093:9093']
+    environment:
+      <<: *broker-env
+      KAFKA_BROKER_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INTERNO://kafka-2:29092,EXTERNO://localhost:9093
+    volumes: [kafka-2-data:/var/lib/kafka/data]
+
+  kafka-3:
+    <<: *broker
+    container_name: p360-kafka-3
+    ports: ['127.0.0.1:9094:9094']
+    environment:
+      <<: *broker-env
+      KAFKA_BROKER_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INTERNO://kafka-3:29092,EXTERNO://localhost:9094
+    volumes: [kafka-3-data:/var/lib/kafka/data]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: p360-kafka-ui
+    depends_on:
+      kafka-1: { condition: service_healthy }
+      kafka-2: { condition: service_healthy }
+      kafka-3: { condition: service_healthy }
+    ports: ['127.0.0.1:8080:8080']
+    environment:
+      KAFKA_CLUSTERS_0_NAME: pedidos360
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+
+  # base de datos de report y audit: los consumidores escriben aquí y las APIs
+  # leen de aquí. Puerto 5433 en el computador porque el 5432 suele estar ocupado.
+  # El usuario y la contraseña salen de .env: sin ese archivo no arranca, así
+  # nunca queda una contraseña escrita en el repositorio
+  postgres:
+    image: postgres:16.15-alpine
+    container_name: p360-postgres
+    ports: ['127.0.0.1:5433:5432']
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    environment:
+      POSTGRES_DB: ${PGDATABASE:?falta PGDATABASE, copia .env.example a .env}
+      POSTGRES_USER: ${PGUSER:?falta PGUSER, copia .env.example a .env}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?falta PGPASSWORD, copia .env.example a .env}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+# Volúmenes con nombre: los mensajes de Kafka, los offsets de los grupos y la
+# base de datos sobreviven a un docker compose down. Solo down -v los borra.
+volumes:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
+  postgres-data:

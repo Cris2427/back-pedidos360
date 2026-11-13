@@ -1,0 +1,4 @@
+node_modules/
+
+# variables locales (contraseñas de la base, ids de Entra): nunca en el repositorio
+.env
