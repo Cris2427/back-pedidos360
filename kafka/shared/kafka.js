@@ -20,6 +20,13 @@ function leerBrokers() {
   }
   return process.env.KAFKA_BROKERS.split(',').map(b => b.trim());
 }
+// Los avisos de KafkaJS en una línea legible, en vez de JSON. Se omite el de
+// rebalanceo: es normal cada vez que entra o sale una instancia del grupo, y
+// el consumidor ya lo informa diciendo qué particiones le tocaron.
+const logCreator = () => ({ label, log }) => {
+  if (String(log.error ?? '').includes('rebalancing')) return;
+  console.error(`${log.timestamp} [kafkajs] ${label} ${log.message}${log.error ? `: ${log.error}` : ''}`);
+};
 
 // ---------------------------------------------------------------- cliente
 
@@ -33,6 +40,7 @@ export function crearKafka(clientId) {
     // 300 ms, 600 ms, 1,2 s... sin pasar de 30 s entre intentos
     retry: { initialRetryTime: 300, retries: 8, maxRetryTime: 30000 },
     logLevel: logLevel.WARN,  // solo avisos y errores: la consola queda limpia para la demo
+    logCreator,
   });
 }
 
