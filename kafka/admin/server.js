@@ -6,11 +6,15 @@ import { crearKafka, CONFIG_PRODUCTOR } from '../shared/kafka.js';
 import { crearLog } from '../shared/consumidor.js';
 import { crearServicio } from './servicio.js';
 import { crearApi } from './api.js';
+import { verificadorDesdeEnv } from '../shared/auth.js';
 
 const PUERTO = 3004;
 const log = crearLog('admin');
 
 async function main() {
+  // primero el filtro JWT: si falta la configuración de Entra ID, falla
+  // antes de tocar Kafka o la base de datos
+  const verificar = verificadorDesdeEnv();
   const kafka = crearKafka(`admin-${process.pid}`);
   const admin = kafka.admin();
   const producer = kafka.producer(CONFIG_PRODUCTOR);
@@ -18,7 +22,7 @@ async function main() {
   await producer.connect();
 
   const servicio = crearServicio({ kafka, admin, producer, log });
-  const servidor = crearApi(servicio, { origen: process.env.CORS_ORIGEN }).listen(PUERTO, () => {
+  const servidor = crearApi(servicio, { origen: process.env.CORS_ORIGEN, verificar }).listen(PUERTO, () => {
     log(`API en http://localhost:${PUERTO}/api/admin`);
   });
   // a diferencia de report y audit, el admin no consume: una segunda

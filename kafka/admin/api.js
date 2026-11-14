@@ -13,12 +13,17 @@
 //   DELETE /grupos/:grupo                   lo borra
 //   GET    /dlt/:servicio                   lo que report o audit no pudo procesar
 //   POST   /dlt/:servicio/reprocesar        lo devuelve a su tópico de origen
-// Errores: 400 si se pide mal, 404 si no existe y 409 si chocaría con el
-// estado del clúster.
+// Errores: 401 sin token válido, 403 sin el rol o el scope, 400 si se pide
+// mal, 404 si no existe y 409 si chocaría con el estado del clúster.
 import { crearApp, ruta, cerrarApp } from '../shared/http.js';
 
+// Administrar Kafka: solo Admin, con messaging.manage, el mismo scope del
+// administrador de la mensajería de la EP4
+export const PERMISO = { scope: 'messaging.manage', roles: ['Admin'] };
+
+// opciones: { origen, verificar } (ver shared/http.js)
 export function crearApi(servicio, opciones) {
-  const app = crearApp(opciones);
+  const app = crearApp({ ...opciones, permiso: PERMISO });
   const base = '/api/admin';
 
   app.get(`${base}/cluster`, ruta(req => servicio.cluster(req.query)));

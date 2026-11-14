@@ -19,6 +19,7 @@ import { crearPool, prepararEsquema } from '../shared/db.js';
 import { repositorioPostgres, repositorioMemoria } from './repositorio.js';
 import { aplicarEvento } from './kpis.js';
 import { crearApi } from './api.js';
+import { verificadorDesdeEnv } from '../shared/auth.js';
 
 const log = crearLog('report');
 
@@ -55,6 +56,9 @@ async function olvidarOffsets(grupo) {
 
 async function main() {
   const opciones = leerOpciones();
+  // primero el filtro JWT: si falta la configuración de Entra ID, falla
+  // antes de tocar Kafka o la base de datos
+  const verificar = verificadorDesdeEnv();  
 
   let repo;
   if (opciones.memoria) {
@@ -68,7 +72,7 @@ async function main() {
 
   // Si el puerto está ocupado es porque otra instancia ya sirve la API:
   // esta solo consume (así se pueden levantar varias para repartir la carga)
-  const servidor = crearApi(repo, { origen: process.env.CORS_ORIGEN }).listen(opciones.puerto, () => {
+  const servidor = crearApi(repo, { origen: process.env.CORS_ORIGEN, verificar }).listen(opciones.puerto, () => {
     log(`API en http://localhost:${opciones.puerto}/api/report (${opciones.memoria ? 'memoria' : 'PostgreSQL'})`);
   });
   servidor.on('error', error => {

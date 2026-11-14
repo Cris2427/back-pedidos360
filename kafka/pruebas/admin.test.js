@@ -12,6 +12,7 @@ import { configuracion, legible, definicionTopico } from '../admin/topicos.js';
 import { validarNuevoTopico, validarCambioConfig, validarParticiones, validarReinicio } from '../admin/validacion.js';
 import { crearServicio } from '../admin/servicio.js';
 import { crearApi } from '../admin/api.js';
+import { verificar, conToken } from './tokens.js';
 
 // Un clúster de 3 brokers en memoria con lo justo del admin de KafkaJS que usa
 // servicio.js. Parte con __consumer_offsets y los tópicos de shared/topics.js,
@@ -199,10 +200,13 @@ test('grupos: lag, instancias y mover offsets solo sin instancias', async () => 
 
 test('la API responde 201, 400, 404 y 409', async t => {
   const { servicio } = servicioFalso();
-  const servidor = crearApi(servicio).listen(0);
+  const servidor = crearApi(servicio, { verificar }).listen(0);
   t.after(() => servidor.close());
   const base = `http://127.0.0.1:${servidor.address().port}/api/admin`;
-  const enviar = (metodo, ruta, cuerpo) => fetch(`${base}${ruta}`, {
+  // un Admin con messaging.manage: el único que administra Kafka
+  const token = await conToken({ roles: ['Admin'], scp: 'messaging.manage' });
+  const pedir = (ruta, init = {}) => fetch(`${base}${ruta}`, { ...init, headers: { ...token, ...init.headers } });
+  const enviar = (metodo, ruta, cuerpo) => pedir(ruta, {
     method: metodo,
     headers: { 'content-type': 'application/json' },
     body: typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo),
@@ -213,13 +217,16 @@ test('la API responde 201, 400, 404 y 409', async t => {
   const malo = await enviar('POST', '/topicos', '{malo');
   assert.equal(malo.status, 400);
   assert.match((await malo.json()).error, /JSON válido/);
-  assert.equal((await fetch(`${base}/topicos?x=1`)).status, 400);
-  assert.equal((await fetch(`${base}/topicos/no.existe`)).status, 404);
-  assert.equal((await fetch(`${base}/topicos`, { method: 'DELETE' })).status, 404);
-  assert.equal((await fetch(`${base}/topicos/${PEDIDOS}`, { method: 'DELETE' })).status, 409);
-  assert.equal((await fetch(`${base}/dlt/otro`)).status, 404);
+  assert.equal((await pedir('/topicos?x=1')).status, 400);
+  assert.equal((await pedir('/topicos/no.existe')).status, 404);
+  assert.equal((await pedir('/topicos', { method: 'DELETE' })).status, 404);
+  assert.equal((await pedir(`/topicos/${PEDIDOS}`, { method: 'DELETE' })).status, 409);
+  assert.equal((await pedir('/dlt/otro')).status, 404);
 
   // la lista no muestra los internos (__consumer_offsets)
-  const lista = await (await fetch(`${base}/topicos`)).json();
+  const lista = await (await pedir('/topicos')).json();
   assert.deepEqual(lista.map(t => t.nombre), [...TOPICOS.map(t => t.nombre), 'demo'].sort());
+
+  // sin token no se crea nada
+  assert.equal((await fetch(`${base}/topicos`, { method: 'POST', body: '{}' })).status, 401);
 });

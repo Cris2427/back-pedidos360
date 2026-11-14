@@ -23,6 +23,7 @@
   "dependencies": {
     "cors": "^2.8.6",
     "express": "^4.21.2",
+    "jose": "^6.2.13",
     "kafkajs": "^2.2.4",
     "pg": "^8.23.1"
   }

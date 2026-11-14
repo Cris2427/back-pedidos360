@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { repositorioMemoria } from '../report/repositorio.js';
 import { crearApi } from '../report/api.js';
+import { verificar, conToken } from './tokens.js';
 import { aplicarEvento, ventasPorHora, topProductos, pedidosActivos, leadTime, resumen } from '../report/kpis.js';
 import { ParametroInvalidoError } from '../shared/http.js';
 import { TransicionInvalidaError } from '../shared/estados.js';
@@ -103,16 +104,19 @@ test('el límite del top debe ser un entero entre 1 y 20', () => {
 
 test('la API responde los KPIs y valida sus parámetros', async t => {
   const repo = await repoCon(generarEventos(500));
-  const servidor = crearApi(repo).listen(0);
+  const servidor = crearApi(repo, { verificar }).listen(0);
   t.after(() => servidor.close());
   const base = `http://127.0.0.1:${servidor.address().port}/api/report`;
+  // un Operador: puede ver los reportes
+  const headers = await conToken({ roles: ['Operador'], scp: 'orders.read' });
 
   for (const ruta of ['ventas-por-hora', 'top-productos', 'pedidos-activos', 'lead-time', 'resumen']) {
-    const r = await fetch(`${base}/${ruta}`);
+    const r = await fetch(`${base}/${ruta}`, { headers });
     assert.equal(r.status, 200, ruta);
   }
-  const malo = await fetch(`${base}/top-productos?limite=0`);
+  const malo = await fetch(`${base}/top-productos?limite=0`, { headers });
   assert.equal(malo.status, 400);
   assert.match((await malo.json()).error, /limite/);
-  assert.equal((await fetch(`${base}/no-existe`)).status, 404);
+  assert.equal((await fetch(`${base}/no-existe`, { headers })).status, 404);
+  assert.equal((await fetch(`${base}/resumen`)).status, 401);
 });

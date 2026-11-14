@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { repositorioMemoria } from '../audit/repositorio.js';
 import { historialDe, buscarRegistros } from '../audit/consultas.js';
 import { crearApi } from '../audit/api.js';
+import { verificar, conToken } from './tokens.js';
 import { registroDe } from '../audit/registro.js';
 import { ParametroInvalidoError, NoEncontradoError } from '../shared/http.js';
 import { generarEventos, armarPedido, eventoDe } from '../bridge/simulador.js';
@@ -92,20 +93,23 @@ test('con muchos pedidos, cada historial queda completo y en orden', async () =>
 
 test('la API responde el historial, la búsqueda y los errores', async t => {
   const repo = await repoCon(registros);
-  const servidor = crearApi(repo).listen(0);
+  const servidor = crearApi(repo, { verificar }).listen(0);
   t.after(() => servidor.close());
   const base = `http://127.0.0.1:${servidor.address().port}/api/audit`;
+  // un Admin: el único que ve la auditoría
+  const headers = await conToken({ roles: ['Admin'], scp: 'orders.read' });
 
-  const historial = await fetch(`${base}/pedidos/PED-PRUEBA-000001`);
+  const historial = await fetch(`${base}/pedidos/PED-PRUEBA-000001`, { headers });
   assert.equal(historial.status, 200);
   assert.equal((await historial.json()).length, 5);
 
-  const busqueda = await fetch(`${base}/registros?que=PEDIDO_CREADO`);
+  const busqueda = await fetch(`${base}/registros?que=PEDIDO_CREADO`, { headers });
   assert.equal(busqueda.status, 200);
   assert.equal((await busqueda.json())[0].que, 'PEDIDO_CREADO');
 
-  assert.equal((await fetch(`${base}/pedidos/PED-NO-EXISTE`)).status, 404);
-  const malo = await fetch(`${base}/registros?otro=1`);
+  assert.equal((await fetch(`${base}/pedidos/PED-NO-EXISTE`, { headers })).status, 404);
+  const malo = await fetch(`${base}/registros?otro=1`, { headers });
   assert.equal(malo.status, 400);
   assert.match((await malo.json()).error, /filtro desconocido/);
+  assert.equal((await fetch(`${base}/registros`)).status, 401);
 });

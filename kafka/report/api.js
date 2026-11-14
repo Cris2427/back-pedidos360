@@ -3,8 +3,12 @@
 import { crearApp, ruta, cerrarApp } from '../shared/http.js';
 import * as kpis from './kpis.js';
 
+// Reportes: los ven Operador y Admin, con el scope orders.read de la EP4
+export const PERMISO = { scope: 'orders.read', roles: ['Operador', 'Admin'] };
+
+// opciones: { origen, verificar } (ver shared/http.js)
 export function crearApi(repo, opciones) {
-  const app = crearApp(opciones);
+  const app = crearApp({ ...opciones, permiso: PERMISO });
 
   app.get('/api/report/ventas-por-hora', ruta(() => kpis.ventasPorHora(repo)));
   app.get('/api/report/top-productos', ruta(req => kpis.topProductos(repo, req.query.limite ?? 5)));

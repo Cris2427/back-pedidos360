@@ -10,18 +10,22 @@ import { crearPool, prepararEsquema } from '../shared/db.js';
 import { deserializarRegistro } from './registro.js';
 import { repositorioPostgres } from './repositorio.js';
 import { crearApi } from './api.js';
+import { verificadorDesdeEnv } from '../shared/auth.js';
 
 const PUERTO = 3003;
 const log = crearLog('audit');
 
 async function main() {
+  // primero el filtro JWT: si falta la configuración de Entra ID, falla
+  // antes de tocar Kafka o la base de datos
+  const verificar = verificadorDesdeEnv();
   const pool = crearPool('audit-timeline');
   await prepararEsquema(pool);
   const repo = repositorioPostgres(pool);
 
   // Igual que en report: si el puerto está ocupado, otra instancia ya sirve
   // la API y esta solo consume
-  const servidor = crearApi(repo, { origen: process.env.CORS_ORIGEN }).listen(PUERTO, () => {
+  const servidor = crearApi(repo, { origen: process.env.CORS_ORIGEN, verificar }).listen(PUERTO, () => {
     log(`API en http://localhost:${PUERTO}/api/audit`);
   });
   servidor.on('error', error => {
@@ -42,4 +46,4 @@ async function main() {
 main().catch(e => {
   console.error(`npm run timeline falló: ${e.message}`);
   process.exit(1);
-});
+}); 
