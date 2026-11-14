@@ -74,8 +74,8 @@ components:
       required: [nombre, precio, stock]
       properties:
         id: { type: string, example: p-001, readOnly: true }
-        nombre: { type: string, example: Notebook 14" }
-        precio: { type: number, minimum: 0, example: 499990 }
+        nombre: { type: string, example: Pizza Margarita }
+        precio: { type: number, minimum: 0, example: 9990 }
         stock: { type: integer, minimum: 0, example: 8 }
 
     OrderItem:
@@ -546,7 +546,7 @@ paths:
       description: >-
         Scope `orders.write` y App Role `Operador`. Transiciones permitidas:
         CREADO→ACEPTADO|CANCELADO, ACEPTADO→EN_PREPARACION|CANCELADO,
-        EN_PREPARACION→DESPACHADO, DESPACHADO→ENTREGADO. No se puede despachar
+        EN_PREPARACION→DESPACHADO|CANCELADO, DESPACHADO→ENTREGADO. No se puede despachar
         sin aceptar. Al pasar a ACEPTADO se descuenta el stock (de forma
         condicional y atómica); al CANCELAR se devuelve solo si alcanzó a
         descontarse.

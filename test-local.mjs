@@ -88,9 +88,9 @@ await call('POST /api/catalog como Cliente', h.catalogPost,
 await call('POST /api/catalog con precio negativo', h.catalogPost,
   ev('POST', '/api/catalog', { ...ADMIN, body: { nombre: 'X', precio: -5, stock: 1 } }), 400);
 const nuevo = await call('POST /api/catalog como Admin', h.catalogPost,
-  ev('POST', '/api/catalog', { ...ADMIN, body: { nombre: 'Monitor 27"', precio: 199990, stock: 5 } }), 201);
+  ev('POST', '/api/catalog', { ...ADMIN, body: { nombre: 'Pizza Napolitana', precio: 10490, stock: 5 } }), 201);
 await call('PUT /api/catalog/{id}', h.catalogPut,
-  ev('PUT', `/api/catalog/${nuevo.body.id}`, { ...ADMIN, id: nuevo.body.id, body: { nombre: 'Monitor 27" QHD', precio: 219990, stock: 5 } }), 200);
+  ev('PUT', `/api/catalog/${nuevo.body.id}`, { ...ADMIN, id: nuevo.body.id, body: { nombre: 'Pizza Napolitana familiar', precio: 13990, stock: 5 } }), 200);
 await call('PUT /api/catalog/{id}/stock', h.catalogStock,
   ev('PUT', `/api/catalog/${nuevo.body.id}/stock`, { ...ADMIN, id: nuevo.body.id, body: { stock: 42 } }), 200);
 await call('PUT stock como Operador', h.catalogStock,
@@ -110,7 +110,7 @@ await call('PATCH estado como Admin', h.ordersStatus,
 const pedido = await call('POST /api/orders como Cliente', h.ordersPost,
   ev('POST', '/api/orders', { ...CLIENTE, body: { clienteId: 'INTENTO-SUPLANTAR', items: [{ productoId: 'p-001', cantidad: 2 }] } }), 201);
 comprobar('el servidor ignora el clienteId del cuerpo', pedido.body.clienteId === CLIENTE.user, pedido.body.clienteId);
-comprobar('el servidor recalcula el total', pedido.body.total === 999980, pedido.body.total);
+comprobar('el servidor recalcula el total', pedido.body.total === 19980, pedido.body.total);
 
 console.log('\n== Regla: el stock decrece al ACEPTAR, no al crear ==');
 comprobar('stock intacto tras crear', (await stockDe('p-001')) === 8, `stock = ${await stockDe('p-001')}`);
@@ -135,6 +135,8 @@ await call('ACEPTADO -> EN_PREPARACION', h.ordersStatus,
   ev('PATCH', `/api/orders/${id}/status`, { ...OPERADOR, id, body: { estado: 'EN_PREPARACION' } }), 200);
 await call('EN_PREPARACION -> DESPACHADO', h.ordersStatus,
   ev('PATCH', `/api/orders/${id}/status`, { ...OPERADOR, id, body: { estado: 'DESPACHADO' } }), 200);
+await call('DESPACHADO -> CANCELADO (ya salió del local)', h.ordersStatus,
+  ev('PATCH', `/api/orders/${id}/status`, { ...OPERADOR, id, body: { estado: 'CANCELADO' } }), 409);
 await call('DESPACHADO -> ENTREGADO', h.ordersStatus,
   ev('PATCH', `/api/orders/${id}/status`, { ...OPERADOR, id, body: { estado: 'ENTREGADO' } }), 200);
 await call('ENTREGADO -> CANCELADO (estado terminal)', h.ordersStatus,
@@ -175,6 +177,18 @@ await call('PUT del propio pedido en CREADO', h.ordersPut,
 await call('DELETE del propio pedido en CREADO', h.ordersDelete,
   ev('DELETE', `/api/orders/${p4.body.id}`, { ...CLIENTE, id: p4.body.id }), 200);
 
+console.log('\n== Se puede cancelar en preparación: todavía no sale del local ==');
+const p5 = await call('POST /api/orders', h.ordersPost,
+  ev('POST', '/api/orders', { ...CLIENTE, body: { items: [{ productoId: 'p-003', cantidad: 2 }] } }), 201);
+await call('-> ACEPTADO', h.ordersStatus,
+  ev('PATCH', `/api/orders/${p5.body.id}/status`, { ...OPERADOR, id: p5.body.id, body: { estado: 'ACEPTADO' } }), 200);
+await call('-> EN_PREPARACION', h.ordersStatus,
+  ev('PATCH', `/api/orders/${p5.body.id}/status`, { ...OPERADOR, id: p5.body.id, body: { estado: 'EN_PREPARACION' } }), 200);
+comprobar('stock de p-003 descontado', (await stockDe('p-003')) === 10, `stock = ${await stockDe('p-003')}`);
+await call('EN_PREPARACION -> CANCELADO', h.ordersStatus,
+  ev('PATCH', `/api/orders/${p5.body.id}/status`, { ...OPERADOR, id: p5.body.id, body: { estado: 'CANCELADO' } }), 200);
+comprobar('stock de p-003 devuelto', (await stockDe('p-003')) === 12, `stock = ${await stockDe('p-003')}`);
+ 
 console.log('\n== Validaciones y stock insuficiente ==');
 await call('POST con cantidad 0', h.ordersPost,
   ev('POST', '/api/orders', { ...CLIENTE, body: { items: [{ productoId: 'p-001', cantidad: 0 }] } }), 400);
@@ -286,7 +300,7 @@ const lote = sqsEvent(evento('PedidoCreado'), evento('PedidoCreado', { pedidoId:
 const { res: resLote } = await capturarLogs(() => parcial(lote));
 comprobar('en un lote solo se reintenta el mensaje que falló',
   resLote.batchItemFailures.length === 1 &&
-    resLote.batchItemFailures[0].itemIdentifier === lote.Records[1].messageId,
+  resLote.batchItemFailures[0].itemIdentifier === lote.Records[1].messageId,
   JSON.stringify(resLote.batchItemFailures));
 
 const dlqCaida = crearConsumidor('prueba-dlq-caida', email.procesar, {
@@ -295,11 +309,11 @@ const dlqCaida = crearConsumidor('prueba-dlq-caida', email.procesar, {
 await consumir('si la DLQ no responde, se reintenta en vez de perderlo', dlqCaida, sqsEvent('roto'), 'reintento');
 
 console.log('\n== Bodega y facturación ==');
-const items = [{ productoId: 'p-001', nombre: 'Notebook 14"', cantidad: 2, precio: 499990 }];
+const items = [{ productoId: 'p-001', nombre: 'Pizza Margarita', cantidad: 2, precio: 9990 }];
 await consumir('orden de preparación de PedidoAceptado', bodega.handler,
   sqsEvent(evento('PedidoAceptado', { pedidoId: 'o-901', items })), 'ack');
 const ordenes = await notifs('bodega');
-comprobar('la orden lista lo que hay que preparar', ordenes[0]?.detalle?.[0] === '2 x Notebook 14"',
+comprobar('la orden lista lo que hay que preparar', ordenes[0]?.detalle?.[0] === '2 x Pizza Margarita',
   ordenes[0]?.detalle?.[0]);
 await consumir('el mismo pedido aceptado otra vez (otro eventId)', bodega.handler,
   sqsEvent(evento('PedidoAceptado', { pedidoId: 'o-901', items })), 'ack');
@@ -332,7 +346,7 @@ console.log('\n== Productor: la API publica los eventos ==');
     ultimo()?.type);
   comprobar('el evento trae lo que necesitan los consumidores',
     ultimo().clienteId === CLIENTE.user && ultimo().total === creadoRes.body.total &&
-      Boolean(ultimo().items?.[0]?.nombre) && Boolean(ultimo().eventId),
+    Boolean(ultimo().items?.[0]?.nombre) && Boolean(ultimo().eventId),
     `${ultimo().clienteId}, ${ultimo().items?.[0]?.nombre}, total ${ultimo().total}`);
 
   const patch = (estado, quien = OPERADOR) =>

@@ -109,8 +109,9 @@ Operador avanza los estados.
 ## Reglas de negocio que aplica el servidor
 
 - **No se puede despachar sin aceptar**: `CREADO → ACEPTADO → EN_PREPARACION →
-  DESPACHADO → ENTREGADO`, con `CANCELADO` disponible solo desde `CREADO` y
-  `ACEPTADO`. Cualquier otro salto responde **409**.
+  DESPACHADO → ENTREGADO`, con `CANCELADO` disponible desde `CREADO`,
+  `ACEPTADO` y `EN_PREPARACION` (mientras el pedido no sale del local).
+  Cualquier otro salto responde **409**.
 - **El stock decrece al ACEPTAR el pedido**, no al crearlo. Cancelar devuelve
   el stock solo si alcanzó a descontarse.
 - Un pedido solo se **edita** en `CREADO` y solo se **elimina** en `CREADO` o
@@ -200,8 +201,8 @@ veces, la segunda no se registra. La clave depende de qué no debe repetirse:
   "eventId": "uuid, único por evento",
   "pedidoId": "o-005",
   "clienteId": "cliente@correo.cl",
-  "items": [{ "productoId": "p-001", "nombre": "Notebook 14\"", "cantidad": 1 }],
-  "total": 499990
+  "items": [{ "productoId": "p-001", "nombre": "Pizza Margarita", "cantidad": 1 }],
+  "total": 9990
 }
 ```
 

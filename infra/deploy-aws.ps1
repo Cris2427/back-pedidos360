@@ -141,9 +141,9 @@ if ([int]$cuenta -gt 0) {
     Write-Skip "la tabla ya tiene $cuenta productos, no se siembra"
 } elseif ($PSCmdlet.ShouldProcess($CatalogTable, 'sembrar 3 productos')) {
     $semilla = @(
-        @{ id = @{ S = 'p-001' }; nombre = @{ S = 'Notebook 14"' }; precio = @{ N = '499990' }; stock = @{ N = '8' } },
-        @{ id = @{ S = 'p-002' }; nombre = @{ S = 'Mouse inalámbrico' }; precio = @{ N = '14990' }; stock = @{ N = '40' } },
-        @{ id = @{ S = 'p-003' }; nombre = @{ S = 'Teclado mecánico' }; precio = @{ N = '59990' }; stock = @{ N = '12' } }
+        @{ id = @{ S = 'p-001' }; nombre = @{ S = 'Pizza Margarita' }; precio = @{ N = '9990' }; stock = @{ N = '8' } },
+        @{ id = @{ S = 'p-002' }; nombre = @{ S = 'Pizza Pepperoni' }; precio = @{ N = '11490' }; stock = @{ N = '40' } },
+        @{ id = @{ S = 'p-003' }; nombre = @{ S = 'Pizza Hawaiana' }; precio = @{ N = '11990' }; stock = @{ N = '12' } }
     )
     foreach ($item in $semilla) {
         $file = Write-JsonFile "pedidos360-item-$($item.id.S).json" $item
