@@ -14,9 +14,15 @@ Lambda consumidora (correo, bodega y boleta).
 Un **microservicio administrador** crea y elimina por REST las colas, los
 topics y las suscripciones de esa mensajería.
 
+**Streaming con Kafka** (carpeta [`kafka/`](kafka/)): los eventos de los
+pedidos en un clúster de 3 brokers levantado con Docker Compose, dos servicios
+que los consumen (reportes y auditoría, con PostgreSQL), sus DLT y un
+microservicio administrador de tópicos, grupos y DLT. Todo está explicado en
+[kafka/README.md](kafka/README.md), con las decisiones de diseño.
+
 Frontend: [Cris2427/front-pedidos360](https://github.com/Cris2427/front-pedidos360)
 
-> **DSY1107 · Desarrollo Cloud Native I** — Evaluaciones Parciales N°1 y N°3.
+> **DSY1107 · Desarrollo Cloud Native I** — Evaluaciones Parciales N°1, N°3 y N°5.
 > Cristian Tapia · Camila Malhue
 
 ## Estructura
@@ -57,7 +63,8 @@ infra/
   mensajeria.json             nombres de topic, colas, DLQ y filtros
   deploy-aws.ps1              despliega todo en AWS
   openapi-pedidos360.yaml     especificación de la API
-test-local.mjs       150 pruebas de la API, la mensajería y el administrador, sin AWS
+test-local.mjs       157 pruebas de la API, la mensajería y el administrador, sin AWS
+kafka/               streaming con Kafka: ver kafka/README.md
 ```
 
 Las 20 funciones de la API y las 3 consumidoras comparten un mismo zip y se
@@ -280,7 +287,7 @@ Tampoco se puede crear algo que ya existe, ni suscribir una DLQ a un topic.
 node test-local.mjs
 ```
 
-150 comprobaciones. Sobre las 10 funciones de pedidos y catálogo: permisos por
+157 comprobaciones. Sobre las 10 funciones de pedidos y catálogo: permisos por
 scope y por rol, validaciones, ciclo de estados, reglas de stock, aislamiento
 entre clientes, numeración correlativa de ids y las formas en que puede llegar
 el claim `roles`. Sobre el productor: que cada cambio de estado publique su
