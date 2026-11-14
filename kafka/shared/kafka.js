@@ -7,8 +7,10 @@ import kafkajs from 'kafkajs';
 
 const { Kafka, Partitioners, CompressionTypes } = kafkajs;
 // los usa el admin: tipos de recurso para leer o cambiar configuración
-// (TOPIC, BROKER) y los niveles de log
-export const { ConfigResourceTypes, logLevel } = kafkajs;
+// (TOPIC, BROKER), de dónde sale cada valor (ConfigSource), cómo leer qué
+// particiones tiene cada miembro de un grupo (AssignerProtocol) y los
+// niveles de log
+export const { ConfigResourceTypes, ConfigSource, AssignerProtocol, logLevel } = kafkajs;
 
 // Los 3 brokers, desde el .env. Con que uno responda basta: el cliente le
 // pide el mapa del clúster (metadata) y desde ahí sabe qué broker es líder

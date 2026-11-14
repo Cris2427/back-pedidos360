@@ -43,12 +43,13 @@ export function crearApp({ origen = 'http://localhost:5173' } = {}) {
   return app;
 }
 
-// Envuelve cada ruta: responde lo que devuelve fn como JSON, y si fn falla
-// (también si es async) le pasa el error al manejador de errores
-export const ruta = fn => (req, res, next) => {
+// Envuelve cada ruta: responde lo que devuelve fn como JSON (con status 200,
+// o 201 cuando la ruta crea algo), y si fn falla (también si es async) le
+// pasa el error al manejador de errores
+export const ruta = (fn, status = 200) => (req, res, next) => {
   Promise.resolve()
     .then(() => fn(req))
-    .then(datos => res.json(datos))
+    .then(datos => res.status(status).json(datos))
     .catch(next);
 };
 
@@ -60,6 +61,8 @@ export function cerrarApp(app, servicio) {
   // el manejador de errores. Un error con status se responde tal cual;
   // cualquier otro es un 500 sin el detalle interno.
   app.use((error, req, res, next) => {
+    // un cuerpo que no es JSON: Express lo rechaza antes de llegar a la ruta
+    if (error.type === 'entity.parse.failed') return res.status(400).json({ error: 'el cuerpo no es un JSON válido' });
     if (error.status) return res.status(error.status).json({ error: error.message });
     console.error(`[${servicio}] error en ${req.method} ${req.path}: ${error.message}`);
     res.status(500).json({ error: 'error interno' });
