@@ -61,8 +61,7 @@ export const CONFIG_PRODUCTOR = {
   // los tópicos los crea npm run topics, nunca un envío por error de nombre
   allowAutoTopicCreation: false,
   // Sin límite de reintentos: si se caen 2 brokers, el productor espera a que
-  // vuelva uno y sigue solo, sin perder ni duplicar. Es lo mismo que hace el
-  // cliente de Java (retries = máximo).
+  // vuelva uno y sigue solo, sin perder ni duplicar.
   retry: { retries: Number.MAX_SAFE_INTEGER, maxRetryTime: 30000 },
 };
 

@@ -47,7 +47,7 @@ export function crearVerificador({ tenantId, apiClientId, jwks } = {}) {
   if (!tenantId || !apiClientId) {
     throw new Error('faltan ENTRA_TENANT_ID y ENTRA_API_CLIENT_ID en el .env (ver .env.example)');
   }
-  // jose descarga las llaves del tenant la primera vez y las guarda en
+  // x descarga las llaves del tenant la primera vez y las guarda en
   // memoria. Si llega un token firmado con una llave que no conoce (Entra ID
   // las rota cada cierto tiempo), las vuelve a pedir.
   const llaves = jwks ?? createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`));

@@ -130,8 +130,7 @@ export async function iniciarConsumidor({ servicio, groupId = servicio, topic, p
     enviarADlt: mensaje => producer.send({ topic: dlt, messages: [mensaje], ...OPCIONES_ENVIO }),
   });
 
-  // Rebalanceo: cada vez que el grupo se reorganiza (entra o sale una
-  // instancia), cada miembro dice qué particiones le tocaron
+  // Rebalanceo: cada vez que el grupo se reorganiza, cada miembro dice qué particiones le tocaron
   consumer.on(consumer.events.GROUP_JOIN, ({ payload }) => {
     const mias = payload.memberAssignment[topic] ?? [];
     log(`en el grupo ${groupId}, particiones: ${mias.length ? mias.join(', ') : 'ninguna (hay más instancias que particiones)'}`);
